@@ -222,6 +222,7 @@ int main(void) {
     /* Cooperative scheduler, using the free-running DWT cycle counter. */
     uint32_t last_tick = board_cycle_counter_read();
     uint32_t last_end = last_tick;
+    uint32_t beep_tick = last_tick;
     uint32_t key_ms = 20u;
     uint32_t dmm_ms = 0u;
     uint32_t ui_pending_ms = 0u;
@@ -258,7 +259,10 @@ int main(void) {
         main_prof_sum[3] += board_cycle_counter_read() - mp_t;
 
         mp_t = board_cycle_counter_read();
-        dmm_beep_service((uint8_t)(elapsed_ms > 255u ? 255u : elapsed_ms));
+        uint32_t beep_now = board_cycle_counter_read();
+        uint32_t beep_elapsed = (beep_now - beep_tick) / SCHED_CYCLES_PER_MS;
+        beep_tick += beep_elapsed * SCHED_CYCLES_PER_MS;
+        dmm_beep_service((uint8_t)(beep_elapsed > 255u ? 255u : beep_elapsed));
         main_prof_sum[5] += board_cycle_counter_read() - mp_t;
 
         mp_t = board_cycle_counter_read();
@@ -277,6 +281,7 @@ int main(void) {
             } else {
                 ui_beep_ms = KEY_BEEP_MS;
             }
+            beep_tick = board_cycle_counter_read();
             dmm_beep_service(0);
         } else {
             ui_tick(ui_pending_ms);

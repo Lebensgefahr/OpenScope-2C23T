@@ -210,8 +210,8 @@ typedef struct {
 } dmm_stats_t;
 
 enum {
-    SCOPE_TRACE_STEP = 3,
-    SCOPE_TRACE_MAX_POINTS = 101,
+    SCOPE_TRACE_STEP = 1,
+    SCOPE_TRACE_MAX_POINTS = 302,
     SCOPE_SAMPLE_COUNT = 2048,
     SCOPE_SAMPLE_BYTES = SCOPE_SAMPLE_COUNT * 2,
     SCOPE_SAMPLES_PER_DIV = 25,
@@ -237,7 +237,7 @@ typedef struct {
     uint8_t valid;
     uint8_t ch2;
     uint8_t timebase;
-    uint8_t count;
+    uint16_t count;
     uint16_t phase;
     uint16_t frame_id;
     uint16_t width;
@@ -389,7 +389,7 @@ static uint16_t scope_roll_trigger_seq;
 static uint16_t scope_roll_trigger_target_seq;
 static int16_t scope_roll_display_offset;
 static int16_t scope_after_y[2][SCOPE_TRACE_MAX_POINTS];
-static uint8_t scope_after_count[2];
+static uint16_t scope_after_count[2];
 static uint8_t scope_after_valid[2];
 static uint8_t ui_math_menu_visible = 0; // 0 = Hidden, 1 = Displayed on Screen
 static uint8_t scope_math_selected = 0; // 0=MODE, 1=MATH OP, 2=FFT DISPLAY/XY, 3=WINDOW, 4=CLEAR HISTORY, 5=HIDE TRACES
@@ -4282,7 +4282,7 @@ static void scope_trace_invalidate(void) {
         for (uint8_t ch = 0; ch < 2u; ++ch) {
             if (scope_ch_enabled[ch] && scope_trace_cache[ch].valid) {
                 scope_after_count[ch] = scope_trace_cache[ch].count;
-                for (uint8_t i = 0; i < scope_trace_cache[ch].count; ++i) {
+                for (uint16_t i = 0; i < scope_trace_cache[ch].count; ++i) {
                     scope_after_y[ch][i] = scope_trace_cache[ch].y[i];
                 }
                 scope_after_valid[ch] = 1;
@@ -5747,6 +5747,34 @@ static void scope_draw_graticule(uint16_t gx, uint16_t gy, uint16_t gw, uint16_t
     }
 }
 
+/* UI-only hold of formatted measurements; live statistics stay untouched. */
+static uint8_t scope_measure_periodic_draw;
+static struct {
+    uint32_t stamp;
+    uint8_t valid, vdiv, probe, timebase, dc;
+    char text[12];
+} scope_measure_display_cache[2][SCOPE_MEASURE_COUNT];
+static const char *scope_measure_display_value(uint8_t ch, uint8_t measure) {
+    uint32_t now = board_cycle_counter_read();
+    uint8_t tb = scope_safe_timebase();
+    if (!scope_measure_periodic_draw ||
+        !scope_measure_display_cache[ch][measure].valid ||
+        (uint32_t)(now - scope_measure_display_cache[ch][measure].stamp) >= 36000000u ||
+        scope_measure_display_cache[ch][measure].vdiv != scope_vdiv_ch[ch] ||
+        scope_measure_display_cache[ch][measure].probe != scope_probe_x10[ch] ||
+        scope_measure_display_cache[ch][measure].timebase != tb ||
+        scope_measure_display_cache[ch][measure].dc != scope_coupling_dc[ch]) {
+        scope_measure_value_for(scope_measure_display_cache[ch][measure].text, ch, measure);
+        scope_measure_display_cache[ch][measure].stamp = now;
+        scope_measure_display_cache[ch][measure].vdiv = scope_vdiv_ch[ch];
+        scope_measure_display_cache[ch][measure].probe = scope_probe_x10[ch];
+        scope_measure_display_cache[ch][measure].timebase = tb;
+        scope_measure_display_cache[ch][measure].dc = scope_coupling_dc[ch];
+        scope_measure_display_cache[ch][measure].valid = 1;
+    }
+    return scope_measure_display_cache[ch][measure].text;
+}
+
 static void draw_scope_measure_text(uint16_t left,
                                     uint16_t right,
                                     uint16_t y,
@@ -5755,7 +5783,7 @@ static void draw_scope_measure_text(uint16_t left,
                                     uint16_t color,
                                     uint16_t bg,
                                     uint8_t align_right) {
-    char value[12];
+    const char *value;
     const char *label;
     uint16_t width = right > left ? (uint16_t)(right - left) : 0u;
     uint16_t label_w;
@@ -5769,7 +5797,7 @@ static void draw_scope_measure_text(uint16_t left,
         measure = SCOPE_MEASURE_VPP;
     }
     label = scope_measure_pretty_label(measure);
-    scope_measure_value_for(value, idx, measure);
+    value = scope_measure_display_value(idx, measure);
 
     {
         char pretty[16];
@@ -6179,7 +6207,7 @@ static void draw_scope_afterglow_trace(uint8_t ch,
     uint16_t i = SCOPE_TRACE_STEP;
     uint16_t dim = scope_dim_color(color);
 
-    for (uint8_t point = 1; point < scope_after_count[ch]; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
+    for (uint16_t point = 1; point < scope_after_count[ch]; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
         if (i > width + SCOPE_TRACE_STEP) {
             break;
         }
@@ -6297,7 +6325,7 @@ static scope_trace_cache_t *scope_trace_prepare(uint8_t ch2,
         return cache;
     }
 
-    uint8_t count = 0;
+    uint16_t count = 0;
     scope_plot_window_t window = scope_plot_window();
     for (uint16_t x = 0; x <= width && count < SCOPE_TRACE_MAX_POINTS; x = (uint16_t)(x + SCOPE_TRACE_STEP)) {
         cache->y[count++] = scope_sample_y(window, x, ch2, center, grid_height, width, min_y, max_y);
@@ -6404,7 +6432,7 @@ static void draw_scope_trace(uint16_t color,
     int16_t prev_x = x0;
     int16_t prev_y = trace->y[0];
     uint16_t i = SCOPE_TRACE_STEP;
-    for (uint8_t point = 1; point < trace->count; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
+    for (uint16_t point = 1; point < trace->count; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
         int16_t x = (int16_t)(x0 + i);
         int16_t y = trace->y[point];
         lcd_line(prev_x, prev_y, x, y, color);
@@ -6472,6 +6500,64 @@ static void ui_draw_math_waveform(uint16_t gx, uint16_t gy, uint16_t gw, uint16_
     }
 }
 
+
+#define SCOPE_BAR_CACHE_RUNS 768u
+typedef struct {
+    uint32_t key;
+    uint16_t count;
+    uint8_t tried;
+    uint32_t runs[SCOPE_BAR_CACHE_RUNS];
+} scope_bar_cache_t;
+static scope_bar_cache_t scope_top_bar, scope_bottom_bar;
+static uint8_t scope_bar_restore(scope_bar_cache_t *cache, uint32_t key, uint16_t y) {
+    if (!lcd_scope_frame_active() || !cache->tried || cache->key != key || !cache->count) return 0;
+    lcd_scope_cache_restore(y, cache->runs, cache->count);
+    return 1;
+}
+static void scope_bar_save(scope_bar_cache_t *cache, uint32_t key, uint16_t y, uint16_t h) {
+    if (!lcd_scope_frame_active() || (cache->tried && cache->key == key)) return;
+    cache->key = key;
+    cache->tried = 1;
+    cache->count = lcd_scope_cache_store(y, h, cache->runs, SCOPE_BAR_CACHE_RUNS);
+}
+static void scope_draw_top_cached(void) {
+    uint32_t key = (uint32_t)battery_percent() |
+                   ((uint32_t)(!!battery_charge_indicator_visible()) << 8) |
+                   ((uint32_t)(!!battery_display_full()) << 9) |
+                   ((uint32_t)(!!usb_cdc_is_configured()) << 10) |
+                   ((uint32_t)(!!(gen_running || gen_output_applied)) << 11);
+    if (scope_bar_restore(&scope_top_bar, key, 0)) return;
+    ui_draw_status_bar("Oscilloscope", D_SCOPE);
+    scope_bar_save(&scope_top_bar, key, 0, DMM_STATUS_H);
+}
+static void scope_draw_bottom_cached(uint16_t bg) {
+    uint32_t flags = (!!ui.running) | ((uint32_t)(!!scope_slow_roll_active()) << 1) |
+        ((uint32_t)(!!scope_ch_enabled[0]) << 2) | ((uint32_t)(!!scope_ch_enabled[1]) << 3) |
+        ((uint32_t)(!!scope_probe_x10[0]) << 4) | ((uint32_t)(!!scope_probe_x10[1]) << 5) |
+        ((uint32_t)(!!scope_coupling_dc[0]) << 6) | ((uint32_t)(!!scope_coupling_dc[1]) << 7);
+    uint32_t key = (uint32_t)scope_safe_timebase() | ((uint32_t)scope_vdiv_ch[0] << 8) |
+                   ((uint32_t)scope_vdiv_ch[1] << 16) | (flags << 24);
+    if (scope_bar_restore(&scope_bottom_bar, key, 220)) return;
+    draw_scope_scale_status(220, bg);
+    scope_bar_save(&scope_bottom_bar, key, 220, 19);
+}
+/* Graticule repaints its entire interior except the rounded corner squares.
+ * Clear everything else, including previous overlays and clipped markers. */
+static void scope_clear_background(uint16_t gx, uint16_t gy, uint16_t gw, uint16_t gh) {
+    if (!lcd_scope_frame_active()) {
+        lcd_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, D_BG);
+        return;
+    }
+    lcd_rect(0, 0, LCD_WIDTH, gy, D_BG);
+    lcd_rect(0, (uint16_t)(gy + gh), LCD_WIDTH, (uint16_t)(LCD_HEIGHT - gy - gh), D_BG);
+    lcd_rect(0, gy, gx, gh, D_BG);
+    lcd_rect((uint16_t)(gx + gw), gy, (uint16_t)(LCD_WIDTH - gx - gw), gh, D_BG);
+    lcd_rect(gx, gy, 10, 10, D_BG);
+    lcd_rect((uint16_t)(gx + gw - 10u), gy, 10, 10, D_BG);
+    lcd_rect(gx, (uint16_t)(gy + gh - 10u), 10, 10, D_BG);
+    lcd_rect((uint16_t)(gx + gw - 10u), (uint16_t)(gy + gh - 10u), 10, 10, D_BG);
+}
+
 static void draw_scope_immersive(void) {
     const uint16_t grid_bg = D_PLOT;
     uint16_t gx = 8;
@@ -6479,8 +6565,8 @@ static void draw_scope_immersive(void) {
     uint16_t gw = 304;
     uint16_t gh = 190;
 
-    DRAW_PROF(0, lcd_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, D_BG));
-    DRAW_PROF(3, ui_draw_status_bar("Oscilloscope", D_SCOPE));
+    DRAW_PROF(0, scope_clear_background(gx, gy, gw, gh));
+    DRAW_PROF(3, scope_draw_top_cached());
 
 #if SCOPE_UI_SAFE_STUB
     scope_sanitize_state();
@@ -6552,7 +6638,7 @@ static void draw_scope_immersive(void) {
                         scope_hw_ready() ? "Waiting for trigger" : "Starting FPGA", D_MUTED, grid_bg));
     }
 
-    DRAW_PROF(3, draw_scope_scale_status(220, D_BG));
+    DRAW_PROF(3, scope_draw_bottom_cached(D_BG));
     DRAW_PROF(7, ui_draw_math_menu());
 }
 
@@ -7681,7 +7767,12 @@ static void ui_render_job(ui_render_job_t job) {
             last_full_scene_key = key;
         }
     }
+    scope_measure_periodic_draw = (job == UI_RENDER_SCOPE_FRAME);
+    lcd_set_scope_frame_mode((uint8_t)(job == UI_RENDER_SCOPE_FRAME &&
+        ui.mode == UI_MODE_SCOPE && ui.overlay == UI_OVERLAY_NONE));
     lcd_render(ui_render_dispatch, 0);
+    lcd_set_scope_frame_mode(0);
+    scope_measure_periodic_draw = 0;
     ui_last_render_ticks = load_counter_elapsed(start, load_counter_read());
     if (job == UI_RENDER_FULL || job == UI_RENDER_BATTERY ||
         (!ui.chrome_visible && (job == UI_RENDER_MODE_CONTENT || job == UI_RENDER_SCOPE_FRAME))) {

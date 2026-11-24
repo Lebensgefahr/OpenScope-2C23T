@@ -46,6 +46,16 @@ static dirty_rect_t dirty_rects[LCD_MAX_DIRTY_RECTS];
 static uint8_t dirty_count;
 static lcd_pass_t lcd_pass;
 static uint8_t lcd_dma_active;
+/* Scope frames paint the entire framebuffer, so a collect pass is redundant. */
+static uint8_t lcd_scope_frame_mode;
+#if LCD_USE_FRAMEBUFFER
+#define SCOPE_DIRTY_ROWS 4u
+#define SCOPE_DIRTY_BANDS ((LCD_HEIGHT + SCOPE_DIRTY_ROWS - 1u) / SCOPE_DIRTY_ROWS)
+static uint32_t scope_lcd_hash[SCOPE_DIRTY_BANDS];
+static uint8_t scope_lcd_valid;
+static uint8_t scope_lcd_refresh_count;
+#endif
+
 uint32_t scope_profile_lcd[3]; /* collect, framebuffer render, LCD flush */
 static uint16_t band_x0;
 static uint16_t band_y0;
@@ -189,6 +199,9 @@ static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 }
 
 static void lcd_rect_direct(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
+#if LCD_USE_FRAMEBUFFER
+    scope_lcd_valid = 0;
+#endif
     if (!w || !h || x >= LCD_WIDTH || y >= LCD_HEIGHT) {
         return;
     }
@@ -205,6 +218,15 @@ static void lcd_rect_direct(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint
     }
 }
 
+/* Avoid a loop branch for every pixel on large background fills. */
+static void fill_pixels(uint16_t *p, uint32_t n, uint16_t color) {
+    while (n >= 8u) {
+        p[0] = color; p[1] = color; p[2] = color; p[3] = color;
+        p[4] = color; p[5] = color; p[6] = color; p[7] = color;
+        p += 8; n -= 8u;
+    }
+    while (n--) *p++ = color;
+}
 static void lcd_rect_band(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
     if (!w || !h || x > band_x1 || y > band_y1) {
         return;
@@ -229,11 +251,15 @@ static void lcd_rect_band(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16
         return;
     }
 
+    uint32_t width = (uint32_t)x1 - x + 1u;
+    if (width == LCD_WIDTH) {
+        fill_pixels(band_buffer + (uint32_t)(y - band_y0) * LCD_WIDTH,
+                    width * ((uint32_t)y1 - y + 1u), color);
+        return;
+    }
     for (uint16_t row = y; row <= y1; ++row) {
-        uint32_t offset = (uint32_t)(row - band_y0) * LCD_WIDTH + x;
-        for (uint16_t col = x; col <= x1; ++col) {
-            band_buffer[offset++] = color;
-        }
+        fill_pixels(band_buffer + (uint32_t)(row - band_y0) * LCD_WIDTH + x,
+                    width, color);
     }
 }
 
@@ -249,6 +275,9 @@ static void lcd_plot_band(int16_t x, int16_t y, uint16_t color) {
 }
 
 static void lcd_plot_direct(int16_t x, int16_t y, uint16_t color) {
+#if LCD_USE_FRAMEBUFFER
+    scope_lcd_valid = 0;
+#endif
     if (x < 0 || y < 0 || x >= (int16_t)LCD_WIDTH || y >= (int16_t)LCD_HEIGHT) {
         return;
     }
@@ -468,10 +497,130 @@ static uint8_t band_flush_start(uint16_t *buffer, uint16_t x0, uint16_t y0, uint
 }
 #endif
 
+
+void lcd_set_scope_frame_mode(uint8_t enabled) {
+    lcd_scope_frame_mode = enabled;
+}
+uint8_t lcd_scope_frame_active(void) {
+#if LCD_USE_FRAMEBUFFER
+    return lcd_scope_frame_mode && lcd_pass == LCD_PASS_RENDER;
+#else
+    return 0;
+#endif
+}
+/* Bounded RLE cache for opaque status bars; no second framebuffer. */
+uint16_t lcd_scope_cache_store(uint16_t y, uint16_t h, uint32_t *runs, uint16_t capacity) {
+#if LCD_USE_FRAMEBUFFER
+    if (!lcd_scope_frame_active() || !h || (uint32_t)y + h > LCD_HEIGHT) return 0;
+    const uint16_t *p = frame_buffer + (uint32_t)y * LCD_WIDTH;
+    uint32_t remaining = (uint32_t)h * LCD_WIDTH;
+    uint16_t count = 0;
+    while (remaining) {
+        uint16_t color = *p++;
+        uint32_t len = 1;
+        --remaining;
+        while (remaining && *p == color && len < 65535u) {
+            ++p; --remaining; ++len;
+        }
+        if (count == capacity) return 0;
+        runs[count++] = (len << 16) | color;
+    }
+    return count;
+#else
+    (void)y; (void)h; (void)runs; (void)capacity;
+    return 0;
+#endif
+}
+void lcd_scope_cache_restore(uint16_t y, const uint32_t *runs, uint16_t count) {
+#if LCD_USE_FRAMEBUFFER
+    if (!lcd_scope_frame_active() || y >= LCD_HEIGHT) return;
+    uint16_t *p = frame_buffer + (uint32_t)y * LCD_WIDTH;
+    uint32_t remaining = (LCD_HEIGHT - y) * LCD_WIDTH;
+    for (uint16_t i = 0; i < count; ++i) {
+        uint32_t n = runs[i] >> 16;
+        if (n > remaining) return;
+        fill_pixels(p, n, (uint16_t)runs[i]);
+        p += n; remaining -= n;
+    }
+#else
+    (void)y; (void)runs; (void)count;
+#endif
+}
+#if LCD_USE_FRAMEBUFFER
+static uint32_t scope_band_hash(uint16_t y, uint16_t h) {
+    const uint16_t *p = frame_buffer + (uint32_t)y * LCD_WIDTH;
+    uint32_t n = (uint32_t)h * LCD_WIDTH;
+    uint32_t hash = 2166136261u;
+    /* LCD_WIDTH is even, and each band contains whole rows. */
+    for (uint32_t i = 0; i < n; i += 2u) {
+        uint32_t word = (uint32_t)p[i] | ((uint32_t)p[i + 1u] << 16);
+        hash = (hash ^ word) * 16777619u;
+    }
+    return hash;
+}
+static uint8_t scope_flush_rows(uint16_t y0, uint16_t y1) {
+    lcd_set_window(0, y0, LCD_WIDTH - 1u, y1);
+    const uint16_t *p = frame_buffer + (uint32_t)y0 * LCD_WIDTH;
+    uint32_t n = (uint32_t)(y1 - y0 + 1u) * LCD_WIDTH;
+    while (n) {
+        uint16_t chunk = n > 65535u ? 65535u : (uint16_t)n;
+        if (!lcd_dma_write_words_sync(p, chunk)) return 0;
+        p += chunk; n -= chunk;
+    }
+    return 1;
+}
+static void scope_flush_changed_bands(void) {
+    uint8_t force = !scope_lcd_valid || ++scope_lcd_refresh_count >= 64u;
+    uint16_t first = LCD_HEIGHT;
+    for (uint16_t i = 0; i < SCOPE_DIRTY_BANDS; ++i) {
+        uint16_t y = (uint16_t)(i * SCOPE_DIRTY_ROWS);
+        uint16_t h = (uint16_t)(LCD_HEIGHT - y);
+        if (h > SCOPE_DIRTY_ROWS) h = SCOPE_DIRTY_ROWS;
+        uint32_t hash = scope_band_hash(y, h);
+        uint8_t changed = force || hash != scope_lcd_hash[i];
+        scope_lcd_hash[i] = hash;
+        if (changed) {
+            if (first == LCD_HEIGHT) first = y;
+        } else if (first != LCD_HEIGHT) {
+            if (!scope_flush_rows(first, (uint16_t)(y - 1u))) {
+                scope_lcd_valid = 0; return;
+            }
+            first = LCD_HEIGHT;
+        }
+    }
+    if (first != LCD_HEIGHT && !scope_flush_rows(first, LCD_HEIGHT - 1u)) {
+        scope_lcd_valid = 0; return;
+    }
+    if (force) scope_lcd_refresh_count = 0;
+    scope_lcd_valid = 1;
+}
+#endif
+
 void lcd_render(lcd_render_fn_t render, void *ctx) {
     if (!render) {
         return;
     }
+
+#if LCD_USE_FRAMEBUFFER
+    if (lcd_scope_frame_mode) {
+        dirty_reset();
+        band_buffer = frame_buffer;
+        band_x0 = band_y0 = 0;
+        band_x1 = LCD_WIDTH - 1u;
+        band_y1 = LCD_HEIGHT - 1u;
+        lcd_pass = LCD_PASS_RENDER;
+        uint32_t scope_t = board_cycle_counter_read();
+        scope_profile_lcd[0] = 0;
+        render(ctx);
+        scope_profile_lcd[1] = board_cycle_counter_read() - scope_t;
+        scope_t = board_cycle_counter_read();
+        lcd_pass = LCD_PASS_IDLE;
+        scope_flush_changed_bands();
+        scope_profile_lcd[2] = board_cycle_counter_read() - scope_t;
+        return;
+    }
+    scope_lcd_valid = 0;
+#endif
 
     uint32_t prof_t = board_cycle_counter_read();
     scope_profile_lcd[1] = scope_profile_lcd[2] = 0;

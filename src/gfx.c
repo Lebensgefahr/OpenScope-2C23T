@@ -130,6 +130,20 @@ static void glyph_span(int16_t x, int16_t y, uint16_t n, uint16_t color) {
     }
 }
 
+/* Reuse alpha blends across consecutive glyphs of the same colors. */
+static uint16_t glyph_blend_fg, glyph_blend_bg, glyph_blend_valid;
+static uint16_t glyph_blend_color[16];
+static uint16_t glyph_cached_blend(uint16_t fg, uint16_t bg, uint8_t alpha) {
+    if (fg != glyph_blend_fg || bg != glyph_blend_bg) {
+        glyph_blend_fg = fg; glyph_blend_bg = bg; glyph_blend_valid = 0;
+    }
+    uint16_t bit = (uint16_t)(1u << alpha);
+    if (!(glyph_blend_valid & bit)) {
+        glyph_blend_color[alpha] = gfx_blend(fg, bg, alpha == 15u ? 16u : (uint8_t)(alpha + (alpha >> 3)));
+        glyph_blend_valid |= bit;
+    }
+    return glyph_blend_color[alpha];
+}
 static void draw_glyph(int16_t x, int16_t y, const lcd_font_t *font, const lcd_glyph_t *g, uint16_t fg, uint16_t bg) {
     const uint8_t *p = font->data + g->offset;
     uint32_t total = (uint32_t)g->w * g->h;
@@ -152,7 +166,7 @@ static void draw_glyph(int16_t x, int16_t y, const lcd_font_t *font, const lcd_g
             i += run;
             continue;
         }
-        uint16_t color = gfx_blend(fg, bg, alpha == 15u ? 16u : (uint8_t)(alpha + (alpha >> 3)));
+        uint16_t color = glyph_cached_blend(fg, bg, alpha);
         while (run) {
             uint16_t col = (uint16_t)(i % g->w);
             uint16_t row = (uint16_t)(i / g->w);
@@ -198,7 +212,55 @@ void gfx_text_center(int16_t x, int16_t y, uint16_t w, const lcd_font_t *font, c
 // Coverage of one corner pixel, in sixteenths, by 4x4 supersampling.
 // Units are eighths of a pixel: sample k of pixel i sits at (4i + k) * 2 + 1,
 // the quarter circle's centre and radius are both 8r.
+static const uint8_t corner_cov_2[4] = {
+    6, 15,
+    15, 16
+};
+static const uint8_t corner_cov_3[9] = {
+    0, 9, 15,
+    9, 16, 16,
+    15, 16, 16
+};
+static const uint8_t corner_cov_7[49] = {
+    0, 0, 0, 2, 9, 13, 16,
+    0, 0, 6, 15, 16, 16, 16,
+    0, 6, 16, 16, 16, 16, 16,
+    2, 15, 16, 16, 16, 16, 16,
+    9, 16, 16, 16, 16, 16, 16,
+    13, 16, 16, 16, 16, 16, 16,
+    16, 16, 16, 16, 16, 16, 16
+};
+static const uint8_t corner_cov_8[64] = {
+    0, 0, 0, 0, 3, 10, 14, 16,
+    0, 0, 1, 9, 16, 16, 16, 16,
+    0, 1, 13, 16, 16, 16, 16, 16,
+    0, 9, 16, 16, 16, 16, 16, 16,
+    3, 16, 16, 16, 16, 16, 16, 16,
+    10, 16, 16, 16, 16, 16, 16, 16,
+    14, 16, 16, 16, 16, 16, 16, 16,
+    16, 16, 16, 16, 16, 16, 16, 16
+};
+static const uint8_t corner_cov_10[100] = {
+    0, 0, 0, 0, 0, 0, 6, 11, 14, 16,
+    0, 0, 0, 0, 5, 14, 16, 16, 16, 16,
+    0, 0, 0, 10, 16, 16, 16, 16, 16, 16,
+    0, 0, 10, 16, 16, 16, 16, 16, 16, 16,
+    0, 5, 16, 16, 16, 16, 16, 16, 16, 16,
+    0, 14, 16, 16, 16, 16, 16, 16, 16, 16,
+    6, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+    11, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+    14, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+    16, 16, 16, 16, 16, 16, 16, 16, 16, 16
+};
 static uint8_t corner_coverage(uint16_t r, uint16_t i, uint16_t j) {
+    switch (r) {
+        case 2u: return corner_cov_2[j * 2u + i];
+        case 3u: return corner_cov_3[j * 3u + i];
+        case 7u: return corner_cov_7[j * 7u + i];
+        case 8u: return corner_cov_8[j * 8u + i];
+        case 10u: return corner_cov_10[j * 10u + i];
+        default: break;
+    }
     int32_t c = (int32_t)r * 8;
     int32_t rr = c * c;
     int32_t dx = c - (int32_t)i * 8 - 7;
