@@ -45,7 +45,7 @@ static volatile uint8_t g_power_off_requested;
 
 void delay_ms(uint32_t ms) {
     while (ms--) {
-        for (volatile uint32_t i = 0; i < 12000u; ++i) {
+        for (volatile uint32_t i = 0; i < 15000u; ++i) {
             __asm__ volatile("nop");
         }
     }
@@ -70,6 +70,21 @@ void gpio_config_mask(uint32_t base, uint16_t mask, uint8_t cfg) {
 
 void board_init(void) {
     REG32(SCB_VTOR) = APP_BASE_ADDR;
+
+    // Restore the stock 240 MHz PLL clock (8 MHz HEXT / 2 * 60).
+    uint32_t misc3 = REG32(RCC_BASE + 0x54u);
+    REG32(RCC_BASE + 0x54u) = misc3 | (3u << 4);
+    RCC_CFGR = (RCC_CFGR & ~3u) | 1u;
+    while ((RCC_CFGR & 12u) != 4u) {}
+    REG32(RCC_BASE) &= ~(1u << 24);
+    while (REG32(RCC_BASE) & (1u << 25)) {}
+    RCC_CFGR = (RCC_CFGR & ~((3u << 29) | (15u << 18))) |
+               (3u << 29) | (11u << 18);
+    REG32(RCC_BASE) |= 1u << 24;
+    while (!(REG32(RCC_BASE) & (1u << 25))) {}
+    RCC_CFGR = (RCC_CFGR & ~3u) | 2u;
+    while ((RCC_CFGR & 12u) != 8u) {}
+    REG32(RCC_BASE + 0x54u) = misc3;
 
     REG32(0xE000EDFCu) |= 1u << 24; // DEMCR.TRCENA
     REG32(0xE0001004u) = 0; // DWT.CYCCNT
@@ -214,7 +229,7 @@ void board_buzzer_init(void) {
 
     TMR_CTRL1(TMR5_BASE) = 0;
     TMR_CCEN(TMR5_BASE) = 0;
-    TMR_PSC(TMR5_BASE) = 71u;   // 1 MHz timer tick when APB1 timer clock is 72 MHz
+    TMR_PSC(TMR5_BASE) = 89u;   // Preserve PWM frequency at 240 MHz SYSCLK.
     TMR_PR(TMR5_BASE) = 999u;   // about 1 kHz
     TMR_C1DT(TMR5_BASE) = percent_to_timer_compare(g_backlight_percent, 999u);
     TMR_C2DT(TMR5_BASE) = percent_to_timer_compare(g_buzzer_volume, 500u);
@@ -384,7 +399,7 @@ void battery_init(void) {
     gpio_config_mask(GPIOA_BASE, 1u << 2, 0x0); // PA2 ADC input
 
     RCC_APB2ENR |= 1u << 9; // ADC1 clock
-    RCC_CFGR = (RCC_CFGR & ~(3u << 14)) | (2u << 14); // ADC clock = PCLK2 / 6
+    RCC_CFGR = (RCC_CFGR & ~(3u << 14)) | (3u << 14); // ADC clock = PCLK2 / 8
 
     ADC_CR1(ADC1_BASE) = 0;
     ADC_CR2(ADC1_BASE) = 0;

@@ -378,7 +378,7 @@ void scope_hw_slow_start(uint8_t timebase) {
     RCC_APB2ENR |= 1u << 11; // TMR1
     TMR_CTRL1(TMR1_BASE) = 0;
     TMR_IDEN(TMR1_BASE) = 0;
-    TMR_PSC(TMR1_BASE) = 7199u; // 72 MHz / 7200 = 10 kHz
+    TMR_PSC(TMR1_BASE) = 23999u; // 240 MHz / 24000 = 10 kHz
     TMR_PR(TMR1_BASE) = ticks - 1u;
     TMR_EG(TMR1_BASE) = 1u;
     TMR_STS(TMR1_BASE) = ~1u;
