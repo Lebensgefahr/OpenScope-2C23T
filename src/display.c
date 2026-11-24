@@ -46,6 +46,7 @@ static dirty_rect_t dirty_rects[LCD_MAX_DIRTY_RECTS];
 static uint8_t dirty_count;
 static lcd_pass_t lcd_pass;
 static uint8_t lcd_dma_active;
+uint32_t scope_profile_lcd[3]; /* collect, framebuffer render, LCD flush */
 static uint16_t band_x0;
 static uint16_t band_y0;
 static uint16_t band_x1;
@@ -472,10 +473,12 @@ void lcd_render(lcd_render_fn_t render, void *ctx) {
         return;
     }
 
+    uint32_t prof_t = board_cycle_counter_read();
+    scope_profile_lcd[1] = scope_profile_lcd[2] = 0;
     dirty_reset();
     lcd_pass = LCD_PASS_COLLECT;
     render(ctx);
-
+    scope_profile_lcd[0] = board_cycle_counter_read() - prof_t;
     uint8_t count = dirty_count;
 #if LCD_USE_FRAMEBUFFER
     band_buffer = frame_buffer;
@@ -484,12 +487,15 @@ void lcd_render(lcd_render_fn_t render, void *ctx) {
     band_x1 = (uint16_t)(LCD_WIDTH - 1u);
     band_y1 = (uint16_t)(LCD_HEIGHT - 1u);
     lcd_pass = LCD_PASS_RENDER;
+    prof_t = board_cycle_counter_read();
     render(ctx);
+    scope_profile_lcd[1] = board_cycle_counter_read() - prof_t;
     lcd_pass = LCD_PASS_IDLE;
-
+    prof_t = board_cycle_counter_read();
     for (uint8_t i = 0; i < count; ++i) {
         frame_flush_rect(&dirty_rects[i]);
     }
+    scope_profile_lcd[2] = board_cycle_counter_read() - prof_t;
 #else
     uint8_t next_buffer = 0;
     uint8_t pending_dma = 0;

@@ -171,6 +171,36 @@ static void dmm_beep_service(uint8_t elapsed_ms) {
     }
 }
 
+#define SCHED_CYCLES_PER_MS 144000u
+
+/* Main-loop profile: CPU cycles per complete loop. */
+static volatile uint32_t main_prof_sum[8];
+static uint32_t main_prof_n;
+static void main_prof_report(void) {
+    static uint32_t report_at;
+    uint32_t now = board_cycle_counter_read();
+    if (!main_prof_n) report_at = now;
+    ++main_prof_n;
+    if ((uint32_t)(now - report_at) < 500u * SCHED_CYCLES_PER_MS) return;
+    if (usb_cdc_is_configured()) {
+        char out[128];
+        char rev[10];
+        uint16_t pos = 0;
+        out[pos++] = '$'; out[pos++] = 'M'; out[pos++] = 'A';
+        out[pos++] = 'I'; out[pos++] = 'N';
+        for (unsigned i = 0; i < 8u; ++i) {
+            uint32_t v = main_prof_sum[i] / main_prof_n;
+            unsigned n = 0;
+            out[pos++] = ',';
+            do { rev[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+            while (n) out[pos++] = rev[--n];
+        }
+        out[pos++] = '\r'; out[pos++] = '\n';
+        usb_cdc_send_bytes((const uint8_t *)out, pos);
+    }
+    for (unsigned i = 0; i < 8u; ++i) main_prof_sum[i] = 0;
+    main_prof_n = 0;
+}
 int main(void) {
     uint16_t input_settle_ms = STARTUP_INPUT_SETTLE_MS;
 
@@ -189,18 +219,56 @@ int main(void) {
     load_counter_init();
     ui_beep_ms = STARTUP_BEEP_MS;
 
+    /* Cooperative scheduler, using the free-running DWT cycle counter. */
+    uint32_t last_tick = board_cycle_counter_read();
+    uint32_t last_end = last_tick;
+    uint32_t key_ms = 20u;
+    uint32_t dmm_ms = 0u;
+    uint32_t ui_pending_ms = 0u;
     while (1) {
-        uint32_t active_start = load_counter_read();
+        uint32_t mp_start = board_cycle_counter_read();
+        uint32_t elapsed_ms = (mp_start - last_tick) / SCHED_CYCLES_PER_MS;
+        if (!elapsed_ms) continue;
+        last_tick += elapsed_ms * SCHED_CYCLES_PER_MS;
+        uint32_t idle_ticks = mp_start - last_end;
+        uint32_t mp_t = mp_start;
+
+        /* Advance real-time timers without replaying old input samples. */
+        key_ms += elapsed_ms;
+        dmm_ms += elapsed_ms;
+        ui_pending_ms += elapsed_ms;
+        if (input_settle_ms > elapsed_ms) {
+            input_settle_ms = (uint16_t)(input_settle_ms - elapsed_ms);
+        } else {
+            input_settle_ms = 0;
+        }
+        if (dmm_ms >= 20u) {
+            dmm_tick(dmm_ms);
+            dmm_ms = 0;
+        }
         if (dmm_poll()) {
             dmm_beep_service(0);
             ui_dmm_measurement_updated();
             ui_dmm_send_usb_telemetry();
         }
-        uint32_t events = input_pressed_events();
+        main_prof_sum[0] += board_cycle_counter_read() - mp_t;
+
+        mp_t = board_cycle_counter_read();
+        usb_msc_poll();
+        main_prof_sum[3] += board_cycle_counter_read() - mp_t;
+
+        mp_t = board_cycle_counter_read();
+        dmm_beep_service((uint8_t)(elapsed_ms > 255u ? 255u : elapsed_ms));
+        main_prof_sum[5] += board_cycle_counter_read() - mp_t;
+
+        mp_t = board_cycle_counter_read();
+        uint32_t events = 0;
+        if (key_ms >= 20u) {
+            key_ms %= 20u;
+            events = input_pressed_events();
+        }
         if (events && !input_settle_ms) {
-            if (events & KEY_POWER) {
-                shutdown_now(1);
-            }
+            if (events & KEY_POWER) shutdown_now(1);
             ui_handle_keys(events);
             if (events & KEY_REPEAT) {
                 ui_beep_ms = 0;
@@ -211,27 +279,22 @@ int main(void) {
             }
             dmm_beep_service(0);
         } else {
-            ui_tick(20);
+            ui_tick(ui_pending_ms);
+            ui_pending_ms = 0;
         }
-        if (ui_auto_sleep_due()) {
-            shutdown_now(0);
-        }
-        fw_update_service();
-        uint32_t active_ticks = load_counter_elapsed(active_start, load_counter_read());
+        main_prof_sum[1] += board_cycle_counter_read() - mp_t;
 
-        uint32_t idle_start = load_counter_read();
-        for (uint8_t i = 0; i < 20u; ++i) {
-            usb_msc_poll();
-            delay_ms(1);
-            dmm_beep_service(1);
-        }
-        dmm_tick(20);
-        if (input_settle_ms > 20u) {
-            input_settle_ms = (uint16_t)(input_settle_ms - 20u);
-        } else {
-            input_settle_ms = 0;
-        }
-        uint32_t idle_ticks = load_counter_elapsed(idle_start, load_counter_read());
-        ui_set_load_sample(active_ticks, idle_ticks);
+        mp_t = board_cycle_counter_read();
+        if (ui_auto_sleep_due()) shutdown_now(0);
+        fw_update_service();
+        main_prof_sum[2] += board_cycle_counter_read() - mp_t;
+
+        mp_t = board_cycle_counter_read();
+        ui_set_load_sample(mp_t - mp_start, idle_ticks);
+        main_prof_sum[6] += board_cycle_counter_read() - mp_t;
+        /* Column 4 remains zero: no artificial blocking delay. */
+        main_prof_sum[7] += board_cycle_counter_read() - mp_start;
+        main_prof_report();
+        last_end = board_cycle_counter_read();
     }
 }

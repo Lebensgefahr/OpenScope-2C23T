@@ -269,6 +269,29 @@ static uint16_t ui_render_ms_x10;
 static uint16_t scope_frame_age_ms;
 static uint16_t scope_frame_interval_x10ms;
 static uint32_t ui_last_render_ticks;
+/* Diagnostic timings, in raw DWT cycles. */
+extern uint32_t scope_profile_lcd[3];
+static uint32_t prof_sum[8], prof_n[8];
+static uint32_t prof_attempts, prof_accepted, prof_prev_frame;
+static uint8_t prof_prev_valid;
+enum { DRAW_PROF_COUNT = 8 };
+static uint32_t draw_prof_frame[DRAW_PROF_COUNT];
+static uint32_t draw_prof_sum[DRAW_PROF_COUNT];
+static uint32_t draw_prof_frames;
+/* Only time the actual framebuffer pass, not dirty collection. */
+#define DRAW_PROF(i, call) do { \
+    if (lcd_collecting()) { call; } else { \
+        uint32_t draw_prof_t = board_cycle_counter_read(); \
+        call; \
+        draw_prof_frame[(i)] += board_cycle_counter_read() - draw_prof_t; \
+    } \
+} while (0)
+
+static void prof_add(unsigned i, uint32_t cycles) {
+    prof_sum[i] += cycles;
+    ++prof_n[i];
+}
+
 static uint32_t ui_fw_update_sequence;
 static uint16_t ui_fw_update_error_ms;
 static scope_trace_cache_t scope_trace_cache[2];
@@ -496,7 +519,7 @@ enum {
     BATTERY_MEASURE_MS = 10000,
     BATTERY_LOW_BLINK_MS = 2000,
     BATTERY_LOW_PCT = 10,
-    SCOPE_FRAME_MS = 40,
+    SCOPE_FRAME_MS = 20,
     SCOPE_STUB_FRAME_MS = 90,
     DMM_FAST_RENDER_MS = 80,
     DMM_STATS_ZERO_RESET_SAMPLES = 8,
@@ -4804,9 +4827,13 @@ static uint8_t scope_poll_frame(void) {
         return 1;
     }
 
-    if (!scope_hw_capture(scope_capture_samples, SCOPE_SAMPLE_BYTES, scope_safe_timebase())) {
+    uint32_t prof_t = board_cycle_counter_read();
+    uint8_t prof_ok = scope_hw_capture(scope_capture_samples, SCOPE_SAMPLE_BYTES, scope_safe_timebase());
+    prof_add(0, board_cycle_counter_read() - prof_t);
+    if (!prof_ok) {
         return 0;
     }
+    prof_t = board_cycle_counter_read();
     if (!scope_auto_zero_active &&
         ui.scope_display == SCOPE_DISPLAY_YT &&
         scope_ch_enabled[scope_trigger_source_index()]) {
@@ -4814,6 +4841,7 @@ static uint8_t scope_poll_frame(void) {
     } else {
         trigger_found = 0;
     }
+    prof_add(1, board_cycle_counter_read() - prof_t);
     if (!scope_trigger_accepts_capture(trigger_found)) {
         return 0;
     }
@@ -4824,7 +4852,9 @@ static uint8_t scope_poll_frame(void) {
     if (ui.scope_display == SCOPE_DISPLAY_ROLL) {
         scope_roll_offset = (uint16_t)((scope_roll_offset + 19u) & (SCOPE_SAMPLE_COUNT - 1u));
     }
+    prof_t = board_cycle_counter_read();
     scope_compute_stats();
+    prof_add(2, board_cycle_counter_read() - prof_t);
     scope_trigger_locked = trigger_found ? 1u : 0u;
     scope_trigger_offset = trigger_found ? trigger_offset : 0;
     if (trigger_found && ui.scope_trigger_mode == SCOPE_TRIGGER_SINGLE && !scope_auto_channel_mask) {
@@ -6449,81 +6479,81 @@ static void draw_scope_immersive(void) {
     uint16_t gw = 304;
     uint16_t gh = 190;
 
-    lcd_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, D_BG);
-    ui_draw_status_bar("Oscilloscope", D_SCOPE);
+    DRAW_PROF(0, lcd_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, D_BG));
+    DRAW_PROF(3, ui_draw_status_bar("Oscilloscope", D_SCOPE));
 
 #if SCOPE_UI_SAFE_STUB
     scope_sanitize_state();
     int16_t ch1_center = scope_channel_center((int16_t)(gy + gh / 2u - 30u), 0);
     int16_t ch2_center = scope_channel_center((int16_t)(gy + gh / 2u + 34u), 1);
-    draw_scope_stub_grid(gx, gy, gw, gh, grid_bg);
+    DRAW_PROF(1, draw_scope_stub_grid(gx, gy, gw, gh, grid_bg));
     if (ui.scope_display == SCOPE_DISPLAY_XY) {
         draw_scope_xy(gx, gy, gw, gh, C_SCOPE);
     } else {
         if (ui.scope_afterglow) {
             if (scope_ch_enabled[0]) {
-                draw_scope_stub_trace(gx, gy, gw, gh, ch1_center, (int16_t)(scope_stub_amp(0) + 16), scope_dim_color(C_CH1), (uint8_t)(ui.scope_phase - 18u));
+                DRAW_PROF(2, draw_scope_stub_trace(gx, gy, gw, gh, ch1_center, (int16_t)(scope_stub_amp(0) + 16), scope_dim_color(C_CH1), (uint8_t)(ui.scope_phase - 18u)));
             }
             if (scope_ch_enabled[1]) {
-                draw_scope_stub_trace(gx, gy, gw, gh, ch2_center, (int16_t)(scope_stub_amp(1) + 12), scope_dim_color(C_CH2), (uint8_t)(ui.scope_phase + 46u));
+                DRAW_PROF(2, draw_scope_stub_trace(gx, gy, gw, gh, ch2_center, (int16_t)(scope_stub_amp(1) + 12), scope_dim_color(C_CH2), (uint8_t)(ui.scope_phase + 46u)));
             }
         }
         if (scope_ch_enabled[0]) {
-            draw_scope_stub_trace(gx, gy, gw, gh, ch1_center, (int16_t)(scope_stub_amp(0) + 16), C_CH1, (uint8_t)ui.scope_phase);
+            DRAW_PROF(2, draw_scope_stub_trace(gx, gy, gw, gh, ch1_center, (int16_t)(scope_stub_amp(0) + 16), C_CH1, (uint8_t)ui.scope_phase));
         }
         if (scope_ch_enabled[1]) {
-            draw_scope_stub_trace(gx, gy, gw, gh, ch2_center, (int16_t)(scope_stub_amp(1) + 12), C_CH2, (uint8_t)(ui.scope_phase + 64u));
+            DRAW_PROF(2, draw_scope_stub_trace(gx, gy, gw, gh, ch2_center, (int16_t)(scope_stub_amp(1) + 12), C_CH2, (uint8_t)(ui.scope_phase + 64u)));
         }
         draw_scope_channel_markers(gx, gy, gh, ch1_center, ch2_center, grid_bg);
     }
     draw_scope_trigger_line(gx, gy, gw, gh, grid_bg);
     draw_scope_cursors(gx, gy, gw, gh, grid_bg);
-    draw_scope_cursor_readout(gx, gy, gw, gh, grid_bg);
-    draw_scope_hpos_indicator(gx, gy, gw, gh, grid_bg);
-    draw_scope_measurements(gx, gy, gw, gh, grid_bg);
-    draw_scope_scale_status(220, grid_bg);
+    DRAW_PROF(5, draw_scope_cursor_readout(gx, gy, gw, gh, grid_bg));
+    DRAW_PROF(4, draw_scope_hpos_indicator(gx, gy, gw, gh, grid_bg));
+    DRAW_PROF(6, draw_scope_measurements(gx, gy, gw, gh, grid_bg));
+    DRAW_PROF(3, draw_scope_scale_status(220, grid_bg));
     return;
 #endif
 
-    scope_draw_graticule(gx, gy, gw, gh);
+    DRAW_PROF(1, scope_draw_graticule(gx, gy, gw, gh));
 
     if (scope_frame_valid || !scope_hw_enabled() || scope_fft_src == 4u) {
         if (ui.scope_display == SCOPE_DISPLAY_XY) {
-            draw_scope_xy(gx, gy, gw, gh, C_SCOPE);
+            DRAW_PROF(2, draw_scope_xy(gx, gy, gw, gh, C_SCOPE));
         } else {
             int16_t plot_x0 = (int16_t)(gx + 1u);
             uint16_t plot_w = (uint16_t)(gw - 3u);
             int16_t ch1_center = scope_channel_center((int16_t)(gy + gh / 2u - 28u), 0);
             int16_t ch2_center = scope_channel_center((int16_t)(gy + gh / 2u + 28u), 1);
             if (scope_slow_roll_active()) {
-                draw_scope_slow_roll_trace(0, plot_x0, plot_w, ch1_center, gy, gh, C_CH1);
-                draw_scope_slow_roll_trace(1, plot_x0, plot_w, ch2_center, gy, gh, C_CH2);
+                DRAW_PROF(2, draw_scope_slow_roll_trace(0, plot_x0, plot_w, ch1_center, gy, gh, C_CH1));
+                DRAW_PROF(2, draw_scope_slow_roll_trace(1, plot_x0, plot_w, ch2_center, gy, gh, C_CH2));
             } else if (scope_fft_src == 4u) {
-                ui_draw_bode(gx, gy, gw, gh);
+                DRAW_PROF(7, ui_draw_bode(gx, gy, gw, gh));
             } else {
-                draw_scope_afterglow_trace(0, plot_x0, plot_w, C_CH1);
-                draw_scope_afterglow_trace(1, plot_x0, plot_w, C_CH2);
-                draw_scope_trace(C_CH1, 0, plot_x0, ch1_center, plot_w, gy, gh);
-                draw_scope_trace(C_CH2, 1, plot_x0, ch2_center, plot_w, gy, gh);
+                DRAW_PROF(2, draw_scope_afterglow_trace(0, plot_x0, plot_w, C_CH1));
+                DRAW_PROF(2, draw_scope_afterglow_trace(1, plot_x0, plot_w, C_CH2));
+                DRAW_PROF(2, draw_scope_trace(C_CH1, 0, plot_x0, ch1_center, plot_w, gy, gh));
+                DRAW_PROF(2, draw_scope_trace(C_CH2, 1, plot_x0, ch2_center, plot_w, gy, gh));
             }
             if (scope_fft_src != 4u) {
-                ui_draw_math_waveform(gx, gy, gw, gh);
-                ui_draw_fft_spectrum(gx, gy, gw, gh);
-                draw_scope_channel_markers(gx, gy, gh, ch1_center, ch2_center, grid_bg);
-                draw_scope_trigger_line(gx, gy, gw, gh, grid_bg);
+                DRAW_PROF(7, ui_draw_math_waveform(gx, gy, gw, gh));
+                DRAW_PROF(7, ui_draw_fft_spectrum(gx, gy, gw, gh));
+                DRAW_PROF(4, draw_scope_channel_markers(gx, gy, gh, ch1_center, ch2_center, grid_bg));
+                DRAW_PROF(4, draw_scope_trigger_line(gx, gy, gw, gh, grid_bg));
             }
         }
-        draw_scope_cursors(gx, gy, gw, gh, grid_bg);
-        draw_scope_cursor_readout(gx, gy, gw, gh, grid_bg);
-        draw_scope_hpos_indicator(gx, gy, gw, gh, grid_bg);
-        draw_scope_measure_readout((uint16_t)(gx + 6u), gy, (uint16_t)(gw - 12u), gh, grid_bg);
+        DRAW_PROF(5, draw_scope_cursors(gx, gy, gw, gh, grid_bg));
+        DRAW_PROF(5, draw_scope_cursor_readout(gx, gy, gw, gh, grid_bg));
+        DRAW_PROF(4, draw_scope_hpos_indicator(gx, gy, gw, gh, grid_bg));
+        DRAW_PROF(6, draw_scope_measure_readout((uint16_t)(gx + 6u), gy, (uint16_t)(gw - 12u), gh, grid_bg));
     } else {
-        gfx_text_center((int16_t)gx, (int16_t)(gy + 80u), gw, &font_medium,
-                        scope_hw_ready() ? "Waiting for trigger" : "Starting FPGA", D_MUTED, grid_bg);
+        DRAW_PROF(7, gfx_text_center((int16_t)gx, (int16_t)(gy + 80u), gw, &font_medium,
+                        scope_hw_ready() ? "Waiting for trigger" : "Starting FPGA", D_MUTED, grid_bg));
     }
 
-    draw_scope_scale_status(220, D_BG);
-    ui_draw_math_menu();
+    DRAW_PROF(3, draw_scope_scale_status(220, D_BG));
+    DRAW_PROF(7, ui_draw_math_menu());
 }
 
 static uint8_t gen_clamped_duty(void) {
@@ -7680,7 +7710,16 @@ static void ui_redraw_battery_status(void) {
 }
 
 static void ui_render_scope_frame(void) {
+    uint32_t t = board_cycle_counter_read();
+    if (prof_prev_valid) prof_add(7, t - prof_prev_frame);
+    prof_prev_frame = t;
+    prof_prev_valid = 1;
+    for (unsigned i = 0; i < DRAW_PROF_COUNT; ++i) draw_prof_frame[i] = 0;
     ui_render_job(UI_RENDER_SCOPE_FRAME);
+    prof_add(6, board_cycle_counter_read() - t);
+    for (unsigned i = 0; i < DRAW_PROF_COUNT; ++i) draw_prof_sum[i] += draw_prof_frame[i];
+    ++draw_prof_frames;
+    for (unsigned i = 0; i < 3; ++i) prof_add(i + 3, scope_profile_lcd[i]);
 }
 
 static void ui_render_gen_params(void) {
@@ -10822,8 +10861,8 @@ void ui_set_load_sample(uint32_t active_ticks, uint32_t idle_ticks) {
         load = 100;
     }
     ui_load_pct = (uint8_t)(((uint16_t)ui_load_pct * 3u + load + 2u) / 4u);
-    if (idle_ticks && ui_last_render_ticks) {
-        uint32_t render_x10 = (ui_last_render_ticks * 200u + idle_ticks / 2u) / idle_ticks;
+    if (ui_last_render_ticks) {
+        uint32_t render_x10 = (ui_last_render_ticks + 7200u) / 14400u;
         ui_render_ms_x10 = render_x10 > 999u ? 999u : (uint16_t)render_x10;
     }
     if (load > ui_load_peak_pct) {
@@ -10955,6 +10994,40 @@ static void scope_stream_telemetry(uint32_t elapsed_ms) {
     }
 }
 
+/* Report batch averages outside the timed operations. Zero = no samples. */
+static void prof_report(void) {
+    if (prof_attempts < 16u) return;
+    if (usb_cdc_is_configured()) {
+        char buf[256];
+        buf[0] = '$';
+        buf[1] = 'P';
+        buf[2] = 'R';
+        buf[3] = 'O';
+        buf[4] = 'F';
+        char num[16];
+        uint16_t p = 5;
+        uint32_t values[11 + DRAW_PROF_COUNT];
+        values[0] = prof_attempts;
+        values[1] = prof_accepted;
+        values[2] = prof_n[6];
+        for (unsigned i = 0; i < 8; ++i)
+            values[i + 3] = prof_n[i] ? prof_sum[i] / prof_n[i] : 0u;
+        for (unsigned i = 0; i < DRAW_PROF_COUNT; ++i)
+            values[11 + i] = draw_prof_frames ? draw_prof_sum[i] / draw_prof_frames : 0u;
+        for (unsigned i = 0; i < 11 + DRAW_PROF_COUNT; ++i) {
+            buf[p++] = ',';
+            scope_format_u32(num, values[i]);
+            for (unsigned j = 0; num[j]; ++j) buf[p++] = num[j];
+        }
+        buf[p++] = '\r';
+        buf[p++] = '\n';
+        usb_cdc_send_bytes((const uint8_t *)buf, p);
+    }
+    for (unsigned i = 0; i < DRAW_PROF_COUNT; ++i) draw_prof_sum[i] = 0;
+    draw_prof_frames = 0;
+    prof_attempts = prof_accepted = 0;
+    for (unsigned i = 0; i < 8; ++i) prof_sum[i] = prof_n[i] = 0;
+}
 void ui_tick(uint32_t elapsed_ms) {
     uint8_t rendered = 0;
 
@@ -11125,9 +11198,11 @@ void ui_tick(uint32_t elapsed_ms) {
 
         scope_frame_age_ms = frame_age > 60000u ? 60000u : (uint16_t)frame_age;
         if (scope_next >= frame_ms) {
-            ui.scope_ms = (uint16_t)(scope_next - frame_ms);
+            ui.scope_ms = (uint16_t)(scope_next % frame_ms);
             ui.scope_phase = (uint16_t)(ui.scope_phase + 7u + scope_safe_timebase() * 3u);
+            ++prof_attempts;
             if (scope_poll_frame()) {
+                ++prof_accepted;
                 uint16_t interval = (uint16_t)((scope_frame_age_ms + 5u) / 10u);
                 scope_frame_interval_x10ms = interval > 999u ? 999u : interval;
                 scope_frame_age_ms = 0;
@@ -11139,10 +11214,12 @@ void ui_tick(uint32_t elapsed_ms) {
                     ui_render_scope_frame();
                 }
             }
+            prof_report();
         } else {
             ui.scope_ms = (uint16_t)scope_next;
         }
     } else {
+        prof_prev_valid = 0;
         ui.scope_ms = 0;
         scope_frame_age_ms = 0;
     }
