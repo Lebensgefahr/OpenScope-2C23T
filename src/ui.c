@@ -799,7 +799,9 @@ static uint8_t scope_auto_time_service(void);
 static void scope_auto_channel_request(uint8_t mask);
 static void scope_auto_channel_service(void);
 static uint8_t scope_auto_channel_tune_vdiv(uint8_t idx);
+#if HW_TARGET_HW40 || !defined(FPGA_HWTRIGGER) || FPGA_HWTRIGGER == 0
 static void scope_set_channel_pos_from_avg(uint8_t idx);
+#endif
 static void ui_apply_saved_runtime_settings(void);
 static uint8_t scope_any_menu_open(void);
 static uint8_t scope_softkey_menu_open(void);
@@ -9396,6 +9398,117 @@ static uint8_t scope_auto_time_service(void) {
     return scope_auto_time_finish(0);
 }
 
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+/* Translate a measured ADC code to another input range before rearming.
+ * The existing voltage conversion is proportional to inverse range code. */
+static uint8_t scope_hw_auto_translate_raw(uint8_t raw, uint8_t from, uint8_t to) {
+    int32_t delta = scope_signed_round_div(((int32_t)raw - 128) *
+                        scope_vdiv_range_code[to], scope_vdiv_range_code[from]);
+    int32_t code = 128 + delta;
+    return code < 0 ? 0u : code > 255 ? 255u : (uint8_t)code;
+}
+
+static uint8_t scope_hw_auto_range(uint8_t ch) {
+    uint8_t old = scope_vdiv_ch[ch];
+    uint8_t lo = scope_min_raw[ch], hi = scope_max_raw[ch];
+    /* Clipping loses amplitude information; widen conservatively and
+     * let the next frame refine the result. Never amplify a flat input. */
+    if (lo <= SCOPE_AUTO_Y_CLIP_LOW || hi >= SCOPE_AUTO_Y_CLIP_HIGH) {
+        return old + 1u < SCOPE_VDIV_COUNT ? (uint8_t)(old + 1u) : old;
+    }
+    if (hi - lo < 10) {
+        return old;
+    }
+    for (uint8_t v = 0; v < SCOPE_VDIV_COUNT; ++v) {
+        uint8_t a = scope_hw_auto_translate_raw(lo, old, v);
+        uint8_t b = scope_hw_auto_translate_raw(hi, old, v);
+        if (a > SCOPE_AUTO_Y_CLIP_LOW && b < SCOPE_AUTO_Y_CLIP_HIGH &&
+            b - a <= SCOPE_AUTO_Y_TARGET_MAX && b - a >= 4) {
+            return v;
+        }
+    }
+    return old;
+}
+
+static void scope_hw_auto_center(uint8_t ch, uint8_t raw) {
+    int16_t height = (int16_t)scope_visible_grid_height();
+    int32_t offset = scope_mv_to_pixels(scope_raw_delta_mv(ch, raw),
+                           (int32_t)scope_vdiv_mv_for_channel(ch), height);
+    int32_t pos = scope_visible_grid_mid_y() -
+                  scope_channel_base_center_for(ch) + offset;
+    if (pos < -SCOPE_V_POS_LIMIT) pos = -SCOPE_V_POS_LIMIT;
+    if (pos > SCOPE_V_POS_LIMIT) pos = SCOPE_V_POS_LIMIT;
+    scope_ch_pos[ch] = scope_clamp_channel_pos(ch, (int16_t)pos);
+}
+
+/* Hardware triggering cannot guarantee frames at arbitrary seed ranges.
+ * Start from a real YT frame, instead of resetting all gains and the
+ * threshold to values which may make READY impossible. */
+static uint8_t scope_hw_auto_setup_from_frame(uint8_t mask) {
+    if (!scope_frame_valid || ui.scope_display != SCOPE_DISPLAY_YT ||
+        scope_slow_roll_active()) {
+        return 0;
+    }
+    uint8_t source = scope_trigger_source_index();
+    if (!(mask & (1u << source)) || scope_channel_pp_raw(source) < 10u) {
+        uint8_t other = (uint8_t)(source ^ 1u);
+        if ((mask & (1u << other)) && scope_channel_pp_raw(other) >= 10u) {
+            source = other;
+        } else {
+            return 0;
+        }
+    }
+    uint32_t freq = scope_estimate_freq_hz_window(source, 2u, 2046u,
+                            scope_min_raw[source], scope_max_raw[source]);
+    uint8_t ranges[2], mids[2];
+    for (uint8_t ch = 0; ch < 2u; ++ch) {
+        ranges[ch] = scope_vdiv_ch[ch];
+        mids[ch] = scope_channel_mid_raw(ch);
+        if (mask & (1u << ch)) {
+            ranges[ch] = scope_hw_auto_range(ch);
+            mids[ch] = scope_hw_auto_translate_raw(mids[ch], scope_vdiv_ch[ch], ranges[ch]);
+        }
+    }
+    /* Do not deliberately arm at a level outside the UI/ADC range. */
+    if (mids[source] < 12u || mids[source] > 243u) {
+        return 0;
+    }
+    ui.scope_trigger_source = (uint8_t)(source + 1u);
+    ui.scope_trigger_level = mids[source];
+    ui.scope_trigger_mode = SCOPE_TRIGGER_AUTO;
+    ui.running = 1;
+    if (freq) {
+        /* Approximately three periods across twelve divisions. */
+        uint32_t target_ns = 250000000u / freq;
+        uint8_t tb = 0;
+        while (tb < SCOPE_AUTO_TIMEBASE_MAX &&
+               scope_timebase_unit_ns[tb] < target_ns) {
+            ++tb;
+        }
+        ui.scope_timebase = tb;
+    }
+    for (uint8_t ch = 0; ch < 2u; ++ch) {
+        if (mask & (1u << ch)) {
+            scope_vdiv_ch[ch] = ranges[ch];
+            scope_hw_auto_center(ch, mids[ch]);
+            scope_auto_channel_steps_left[ch] = SCOPE_VDIV_COUNT - 1u - ranges[ch];
+        }
+    }
+    ui.scope_vdiv = scope_safe_vdiv();
+    scope_cursor_level_sync_screen();
+    scope_h_pos = 0;
+    scope_h_value_pos = 0;
+    scope_h_value_timebase = scope_safe_timebase();
+    scope_cursor_time_sync_screen();
+    scope_trigger_locked = 0;
+    scope_roll_trigger_reset();
+    scope_auto_channel_mask = mask;
+    scope_apply_settings();
+    scope_hw_arm();
+    return 1;
+}
+#endif
+
 static void scope_auto_setup_request(uint8_t mask) {
     mask &= 0x03u;
     if (!mask) {
@@ -9407,6 +9520,15 @@ static void scope_auto_setup_request(uint8_t mask) {
         return;
     }
     scope_auto_zero_active = 0;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    if (scope_hw_auto_setup_from_frame(mask)) {
+        return;
+    }
+    /* No usable captured frame: leave the existing setup intact rather
+     * than losing the signal by blindly changing the gain and threshold.
+     * True no-signal autoset requires a future FPGA force-capture path. */
+    return;
+#endif
     scope_auto_seed_ranges(mask);
     scope_auto_time_mask = mask;
     scope_auto_time_steps_left = SCOPE_AUTO_TIMEBASE_MAX;
@@ -9472,11 +9594,24 @@ static uint8_t scope_auto_channel_tune(uint8_t idx) {
     if (idx >= 2u) {
         return 0;
     }
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    uint8_t old_range = scope_vdiv_ch[idx];
+    uint8_t mid = scope_channel_mid_raw(idx);
+#endif
     changed = scope_auto_channel_tune_vdiv(idx);
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    mid = scope_hw_auto_translate_raw(mid, old_range, scope_vdiv_ch[idx]);
+    scope_hw_auto_center(idx, mid);
+    if (idx == scope_trigger_source_index() && mid >= 12u && mid <= 243u &&
+        scope_channel_pp_raw(idx) >= 10u) {
+        ui.scope_trigger_level = mid;
+    }
+#else
     scope_set_channel_pos_from_avg(idx);
     if (idx == scope_trigger_source_index()) {
         ui.scope_trigger_level = scope_channel_mid_raw(idx);
     }
+#endif
     return changed;
 }
 
@@ -9523,12 +9658,14 @@ static void scope_auto_channel_service(void) {
     }
 }
 
+#if HW_TARGET_HW40 || !defined(FPGA_HWTRIGGER) || FPGA_HWTRIGGER == 0
 static void scope_set_channel_pos_from_avg(uint8_t idx) {
     int16_t delta = (int16_t)scope_avg_raw[idx] - 128;
     int16_t pos = (int16_t)((delta * 7 + (delta >= 0 ? 6 : -6)) / 12);
 
     scope_ch_pos[idx] = scope_clamp_channel_pos(idx, pos);
 }
+#endif
 
 static void scope_adjust_selected_param(int8_t dir) {
     scope_sanitize_state();
