@@ -88,6 +88,7 @@ HOST_TEST_BINS := $(BUILD_ROOT)/tests/bootloader-old $(BUILD_ROOT)/tests/bootloa
                   $(BUILD_ROOT)/tests/dmm-old $(BUILD_ROOT)/tests/dmm-hw4 \
                   $(BUILD_ROOT)/tests/scope_window-old $(BUILD_ROOT)/tests/scope_window-hw4 \
                   $(BUILD_ROOT)/tests/scope_measurements-old $(BUILD_ROOT)/tests/scope_measurements-hw4 \
+                  $(BUILD_ROOT)/tests/scope_hw_auto-old \
                   $(BUILD_ROOT)/tests/fft $(BUILD_ROOT)/tests/settings \
                   $(BUILD_ROOT)/tests/generator-old $(BUILD_ROOT)/tests/generator-hw4 \
                   $(BUILD_ROOT)/tests/fpga_timing-old $(BUILD_ROOT)/tests/fpga_timing-hw4 \
@@ -111,6 +112,7 @@ test: $(HOST_TEST_BINS)
 	$(BUILD_ROOT)/tests/scope_window-hw4
 	$(BUILD_ROOT)/tests/scope_measurements-old
 	$(BUILD_ROOT)/tests/scope_measurements-hw4
+	$(BUILD_ROOT)/tests/scope_hw_auto-old
 	$(BUILD_ROOT)/tests/fft
 	$(BUILD_ROOT)/tests/settings
 	$(BUILD_ROOT)/tests/generator-old
@@ -148,6 +150,10 @@ $(BUILD_ROOT)/tests/fw_update-old $(BUILD_ROOT)/tests/fw_update-hw4: tests/fw_up
 $(BUILD_ROOT)/tests/dmm-old $(BUILD_ROOT)/tests/dmm-hw4: tests/dmm.c src/dmm.c src/dmm.h src/ui.c src/settings.h src/hw.h Makefile
 	@mkdir -p $(dir $@)
 	$(CLANG) $(HOST_TEST_FLAGS) -DHW_TARGET_HW40=$(if $(filter %-hw4,$@),1,0) -DEXPECTED_FW_VERSION='"$(VERSION)"' $< $(HOST_TEST_LINK) -o $@
+
+$(BUILD_ROOT)/tests/scope_hw_auto-old: tests/scope_hw_auto.c tests/scope_measurements.c src/ui.c src/scope.h src/settings.h src/fft.h src/gfx.c src/ui_fonts.c
+	@mkdir -p $(dir $@)
+	$(CLANG) $(HOST_TEST_FLAGS) -DHW_TARGET_HW40=0 -DFPGA_HWTRIGGER=1 $< src/gfx.c src/ui_fonts.c $(HOST_TEST_LINK) -o $@
 
 $(BUILD_ROOT)/tests/%-old: tests/%.c src/ui.c src/settings.h src/fft.h src/gfx.c src/ui_fonts.c
 	@mkdir -p $(dir $@)
