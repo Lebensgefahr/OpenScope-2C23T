@@ -204,13 +204,18 @@ void compute_fft_bin(const float *input_real, uint16_t count, uint8_t window_typ
     }
 }
 
-// Manually satisfy the bare-metal __aeabi_memclr4 symbol requirement
-__attribute__((used)) 
-void __aeabi_memclr4(void *dest, unsigned int bytes) {
-    uint32_t *d = (uint32_t *)dest;
-    unsigned int words = bytes >> 2; // Divide by 4 to get word count
-    
-    while (words--) {
+// ARM EABI zero-fill helpers for the freestanding firmware.
+// Byte writes allow unaligned addresses and sizes that are not multiples of 4.
+// Volatile prevents the compiler from lowering the loop to a runtime call.
+__attribute__((used))
+void __aeabi_memclr(void *dest, unsigned int bytes) {
+    volatile uint8_t *d = (volatile uint8_t *)dest;
+    while (bytes--) {
         *d++ = 0;
     }
+}
+
+__attribute__((used))
+void __aeabi_memclr4(void *dest, unsigned int bytes) {
+    __aeabi_memclr(dest, bytes);
 }
