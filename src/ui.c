@@ -4807,6 +4807,16 @@ static uint8_t scope_poll_frame(void) {
     if (!scope_hw_capture(scope_capture_samples, SCOPE_SAMPLE_BYTES, scope_safe_timebase())) {
         return 0;
     }
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    /* READY is the experimental fixed-threshold FPGA trigger result.
+     * No pretrigger: the valid display window starts at buffer offset zero.
+     * This does not implement menu-adjustable level, source, or AUTO timeout. */
+    if (ui.scope_display == SCOPE_DISPLAY_YT && !scope_auto_zero_active &&
+        !scope_auto_channel_mask) {
+        trigger_found = 1u;
+        trigger_offset = 0u;
+    } else
+#endif
     if (!scope_auto_zero_active &&
         ui.scope_display == SCOPE_DISPLAY_YT &&
         scope_ch_enabled[scope_trigger_source_index()]) {
