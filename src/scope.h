@@ -30,7 +30,7 @@ void scope_hw_configure_channels(uint8_t timebase,
 void scope_hw_set_offsets(uint16_t ch1_dac, uint16_t ch2_dac);
 void scope_hw_arm(void);
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-uint8_t scope_hw_set_trigger_source(uint8_t channel);
+uint8_t scope_hw_set_trigger(uint8_t channel, uint8_t level, uint8_t falling);
 #endif
 uint8_t scope_hw_capture(uint8_t *dst, uint16_t len, uint8_t timebase);
 uint8_t scope_hw_capture_point(uint8_t sample[2], uint8_t timebase);

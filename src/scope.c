@@ -487,8 +487,8 @@ void scope_hw_set_offsets(uint16_t ch1_dac, uint16_t ch2_dac) {
 }
 
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-uint8_t scope_hw_set_trigger_source(uint8_t channel) {
-    return fpga_capture_set_trigger_source(channel);
+uint8_t scope_hw_set_trigger(uint8_t channel, uint8_t level, uint8_t falling) {
+    return fpga_capture_set_trigger(channel, level, falling);
 }
 #endif
 

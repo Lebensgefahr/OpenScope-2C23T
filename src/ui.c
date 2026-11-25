@@ -4700,8 +4700,9 @@ static uint8_t scope_poll_frame(void) {
     }
 
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-    /* Discard an outstanding capture from the previous trigger source. */
-    if (scope_hw_set_trigger_source(scope_trigger_source_index())) {
+    /* Discard an outstanding capture made with obsolete trigger parameters. */
+    if (scope_hw_set_trigger(scope_trigger_source_index(), ui.scope_trigger_level,
+                             ui.scope_trigger_edge)) {
         scope_hw_arm();
         return 0;
     }
@@ -4886,7 +4887,8 @@ static void scope_apply_settings_keep_frame(uint8_t keep_frame) {
     scope_sanitize_state();
     scope_hw_slow_stop();
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-    (void)scope_hw_set_trigger_source(scope_trigger_source_index());
+    (void)scope_hw_set_trigger(scope_trigger_source_index(), ui.scope_trigger_level,
+                               ui.scope_trigger_edge);
 #endif
     scope_hw_configure_channels(ui.scope_timebase,
                                 scope_vdiv_ch[0],

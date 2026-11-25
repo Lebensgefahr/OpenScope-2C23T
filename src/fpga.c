@@ -26,14 +26,24 @@ static uint32_t fpga_last_tuning_word;
 static uint32_t fpga_last_span = FPGA_SAMPLE_COUNT;
 
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-/* PC1 is sampled by the new FPGA logic only while capture is armed. */
-static uint8_t fpga_trigger_channel;
+/* Serial arm word: falling, threshold[7:0], channel, MSB first. */
+static uint16_t fpga_trigger_config = 128u << 1;
 
-uint8_t fpga_capture_set_trigger_source(uint8_t channel) {
-    channel = channel ? 1u : 0u;
-    uint8_t changed = fpga_trigger_channel != channel;
-    fpga_trigger_channel = channel;
+uint8_t fpga_capture_set_trigger(uint8_t channel, uint8_t level, uint8_t falling) {
+    uint16_t word = ((uint16_t)(falling != 0u) << 9) |
+                    ((uint16_t)level << 1) | (uint16_t)(channel != 0u);
+    uint8_t changed = fpga_trigger_config != word;
+    fpga_trigger_config = word;
     return changed;
+}
+
+/* GPIO-only serial arm clocks, no SPI transactions. At least 64 core
+ * cycles of setup/high/low time, plus loop and peripheral bus latency.
+ * The FPGA synchronizes arm before shifting the stable PC1 data. */
+static void fpga_trigger_gpio_settle(void) {
+    for (volatile uint32_t i = 0; i < 64u; ++i) {
+        __asm__ volatile("nop");
+    }
 }
 #endif
 
@@ -480,21 +490,34 @@ void fpga_write_signal_buffer(const uint8_t *data, uint16_t len) {
 
 void fpga_capture_latch(void) {
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-    /* No SPI clock is issued during this strobe. Keep PC1 stable for the
-     * entire arm interval, then restore the normal function-select idle. */
-    if (fpga_trigger_channel) {
-        gpio_set(GPIOC_BASE, 1u << 1);
-    } else {
-        gpio_clear(GPIOC_BASE, 1u << 1);
+    uint16_t word = fpga_trigger_config;
+    gpio_clear(GPIOC_BASE, 1u << 2);
+    gpio_set(GPIOC_BASE, 1u << 0);
+    for (uint8_t i = 10u; i != 0u; --i) {
+        if (word & (1u << (i - 1u))) {
+            gpio_set(GPIOC_BASE, 1u << 1);
+        } else {
+            gpio_clear(GPIOC_BASE, 1u << 1);
+        }
+        fpga_trigger_gpio_settle();
+        gpio_set(GPIOC_BASE, 1u << 2);
+        if (i == 1u) {
+            /* Final bit is the channel; retain the original full arm interval
+             * so the comparator and edge history settle before acquisition. */
+            delay_ms(FPGA_LATCH_SETTLE_MS);
+        } else {
+            fpga_trigger_gpio_settle();
+        }
+        gpio_clear(GPIOC_BASE, 1u << 2);
+        fpga_trigger_gpio_settle();
     }
-#endif
+    gpio_clear(GPIOC_BASE, (1u << 0) | (1u << 1));
+#else
     gpio_set(GPIOC_BASE, 1u << 0);
     gpio_set(GPIOC_BASE, 1u << 2);
     delay_ms(FPGA_LATCH_SETTLE_MS);
     gpio_clear(GPIOC_BASE, 1u << 2);
     gpio_clear(GPIOC_BASE, 1u << 0);
-#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-    gpio_clear(GPIOC_BASE, 1u << 1);
 #endif
 }
 

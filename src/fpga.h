@@ -15,7 +15,7 @@ void fpga_write_scope_timing(uint32_t span);
 void fpga_write_signal_buffer(const uint8_t *data, uint16_t len);
 void fpga_capture_latch(void);
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-uint8_t fpga_capture_set_trigger_source(uint8_t channel);
+uint8_t fpga_capture_set_trigger(uint8_t channel, uint8_t level, uint8_t falling);
 #endif
 uint8_t fpga_capture_ready(void);
 void fpga_capture_ready_irq_handler(void);
