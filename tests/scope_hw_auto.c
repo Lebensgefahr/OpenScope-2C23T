@@ -10,7 +10,7 @@ uint8_t scope_hw_set_trigger(uint8_t channel, uint8_t level, uint8_t falling) {
 }
 
 static void feed_hw_auto(uint8_t lo1, uint8_t hi1, uint8_t lo2, uint8_t hi2) {
-    auto_fill_channel(0, 100, lo1, hi1);
+    auto_fill_channel(0, 50, lo1, hi1);
     auto_fill_channel(1, 103, lo2, hi2);
     auto_frame();
 }
@@ -36,7 +36,7 @@ static void test_frame_autoset(void) {
     assert(!scope_auto_time_active && !scope_auto_channel_mask);
     assert(ui.scope_trigger_source == 1 && ui.scope_trigger_level == 168);
     assert(scope_vdiv_ch[0] == 5 && scope_vdiv_ch[1] == 4);
-    assert(ui.scope_timebase < 11);
+    assert(ui.scope_timebase == 10);
     for (uint8_t ch = 0; ch < 2; ++ch) {
         uint8_t mid = ch == 0 ? 168 : 112;
         int16_t center = scope_channel_base_center_for(ch) + scope_ch_pos[ch];

@@ -9552,6 +9552,9 @@ static uint8_t scope_hw_auto_step(void) {
             tb = 0;
             while (tb < SCOPE_AUTO_TIMEBASE_MAX &&
                    scope_timebase_unit_ns[tb] < target_ns) ++tb;
+            if (tb && scope_timebase_unit_ns[tb] >= target_ns &&
+                target_ns - scope_timebase_unit_ns[tb - 1u] <=
+                scope_timebase_unit_ns[tb] - target_ns) --tb;
         }
     }
     uint8_t changed = tb != scope_safe_timebase();
