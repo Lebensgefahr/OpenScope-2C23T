@@ -70,7 +70,7 @@ enum {
     MSC_CSW_OK = 0,
     MSC_CSW_FAIL = 1,
     MSC_UPDATE_IDLE_APPLY_MS = 1000,
-    USB_LINK_QUIET_CYCLES = 28800000u,
+    USB_LINK_QUIET_CYCLES = 48000000u,
 };
 
 enum UsbEp0State {
