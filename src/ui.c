@@ -2543,10 +2543,19 @@ static int32_t scope_h_pos_sample_offset(void) {
     return numerator / SCOPE_H_POS_LIMIT;
 }
 
+static uint16_t scope_trigger_screen_sample_pos(void);
+
 static uint16_t scope_capture_window_start(void) {
     uint16_t max_start = (uint16_t)(SCOPE_SAMPLE_COUNT - scope_visible_sample_count());
     int32_t start = scope_trigger_locked ? (int32_t)scope_trigger_offset :
         (int32_t)(max_start / 2u) + scope_h_pos_sample_offset();
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    /* Ring captures store an absolute trigger sample, not a fixed window
+     * start. MOVE therefore also works on a stopped SINGLE frame. */
+    if (scope_trigger_locked && ui.scope_display == SCOPE_DISPLAY_YT) {
+        start = (int32_t)scope_trigger_offset - scope_trigger_screen_sample_pos();
+    }
+#endif
 
     // Capture boundaries are not adjacent in time; never wrap a display window.
     if (start < 0) {
@@ -4661,6 +4670,34 @@ static uint8_t scope_find_trigger_offset(const uint8_t *samples, uint16_t *offse
     return 0;
 }
 
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+/* The stop comparator quantizes to eight pairs; locate the nearest sampled
+ * crossing around the nominal midpoint. Decimation can miss a narrow edge,
+ * so a valid hardware READY must not be rejected when none is sampled. */
+static uint16_t scope_ring_trigger_sample(const uint8_t *samples) {
+    const uint16_t mid = SCOPE_SAMPLE_COUNT / 2u;
+    uint16_t best = mid;
+    uint16_t best_dist = 33u;
+    uint8_t ch = scope_trigger_source_index();
+    uint8_t level = ui.scope_trigger_level;
+    for (uint16_t i = mid - 32u; i <= mid + 32u; ++i) {
+        uint8_t prev = samples[(i - 1u) * 2u + ch];
+        uint8_t cur = samples[i * 2u + ch];
+        uint8_t crossed = ui.scope_trigger_edge ?
+            (prev >= level && cur < level) : (prev < level && cur >= level);
+#if FPGA_HWTRIGGER == 2
+        crossed = (prev < level) != (cur < level);
+#endif
+        uint16_t dist = i > mid ? i - mid : mid - i;
+        if (crossed && dist < best_dist) {
+            best = i;
+            best_dist = dist;
+        }
+    }
+    return best;
+}
+#endif
+
 static void scope_copy_capture_samples(void) {
     uint32_t *dst = (uint32_t *)(void *)scope_samples;
     const uint32_t *src = (const uint32_t *)(const void *)scope_capture_samples;
@@ -4816,19 +4853,23 @@ static uint8_t scope_poll_frame(void) {
         return 0;
     }
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-    /* READY is the experimental fixed-threshold FPGA trigger result.
-     * No pretrigger: the valid display window starts at buffer offset zero.
-     * This does not implement menu-adjustable level, source, or AUTO timeout. */
+    /* READY is a hardware-triggered, chronologically ordered ring frame.
+     * Store the absolute trigger sample; MOVE calculates the window from it. */
     if (ui.scope_display == SCOPE_DISPLAY_YT && !scope_auto_zero_active &&
         !scope_auto_channel_mask) {
         trigger_found = 1u;
-        trigger_offset = 0u;
+        trigger_offset = scope_ring_trigger_sample(scope_capture_samples);
     } else
 #endif
     if (!scope_auto_zero_active &&
         ui.scope_display == SCOPE_DISPLAY_YT &&
         scope_ch_enabled[scope_trigger_source_index()]) {
         trigger_found = scope_find_trigger_offset(scope_capture_samples, &trigger_offset);
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+        if (trigger_found) {
+            trigger_offset += scope_trigger_screen_sample_pos();
+        }
+#endif
     } else {
         trigger_found = 0;
     }
@@ -8819,7 +8860,13 @@ static void scope_adjust_h_pos(int8_t dir) {
     scope_h_value_pos = scope_h_pos;
     scope_h_value_timebase = scope_safe_timebase();
     ui.scope_move_sel = SCOPE_MOVE_SEL_X;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    if (ui.scope_display != SCOPE_DISPLAY_YT) {
+        scope_trigger_locked = 0;
+    }
+#else
     scope_trigger_locked = 0;
+#endif
     scope_roll_trigger_reset();
     scope_trace_invalidate();
 }
@@ -8837,7 +8884,13 @@ static void scope_reset_move_positions(void) {
     scope_h_value_pos = 0;
     scope_h_value_timebase = scope_safe_timebase();
     ui.scope_move_sel = SCOPE_MOVE_SEL_ZERO;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    if (ui.scope_display != SCOPE_DISPLAY_YT) {
+        scope_trigger_locked = 0;
+    }
+#else
     scope_trigger_locked = 0;
+#endif
     scope_roll_trigger_reset();
     scope_trace_invalidate();
 }

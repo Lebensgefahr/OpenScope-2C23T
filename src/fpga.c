@@ -459,6 +459,9 @@ uint8_t fpga_ready(void) {
 void fpga_write_timing(uint32_t tuning_word, uint32_t span) {
     fpga_last_tuning_word = tuning_word;
     fpga_last_span = span;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    gpio_clear(GPIOC_BASE, 1u << 1); /* ordinary read-counter reset */
+#endif
     fpga_write_strobe();
     gpio_set(GPIOC_BASE, 1u << 0);
     gpio_clear(GPIOC_BASE, 1u << 1);
@@ -480,6 +483,9 @@ void fpga_write_scope_timing(uint32_t span) {
 }
 
 void fpga_write_signal_buffer(const uint8_t *data, uint16_t len) {
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    gpio_clear(GPIOC_BASE, 1u << 1); /* ordinary read-counter reset */
+#endif
     fpga_write_strobe();
     gpio_set(GPIOC_BASE, (1u << 0) | (1u << 1));
     for (uint16_t i = 0; i < len; ++i) {
@@ -527,10 +533,29 @@ uint8_t fpga_capture_ready(void) {
 
 uint8_t fpga_capture_read(uint8_t *dst, uint16_t len) {
     gpio_clear(GPIOC_BASE, 1u << 0);
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    /* PC1=1 selects synchronous load of the frozen pair address on the
+     * PC2/SS framing strobe. PC1=0 retains the stock counter reset. */
+    gpio_set(GPIOC_BASE, 1u << 1);
+#endif
     fpga_write_strobe();
     (void)SPI_DT(SPI3_BASE);
     gpio_set(GPIOC_BASE, 1u << 1);
 
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    /* Skip the final written pair to start at the oldest pair in the ring.
+     * Two whole byte frames preserve the stock CH1/CH2 alignment. */
+    for (uint8_t i = 0; i < 2u; ++i) {
+        uint8_t discard;
+        gpio_clear(GPIOA_BASE, 1u << 15);
+        if (!spi3_transfer_raw_timeout(0, &discard)) {
+            gpio_set(GPIOA_BASE, 1u << 15);
+            gpio_clear(GPIOC_BASE, 1u << 1);
+            return 0;
+        }
+        gpio_set(GPIOA_BASE, 1u << 15);
+    }
+#endif
     for (uint16_t i = 0; i < len; ++i) {
         gpio_clear(GPIOA_BASE, 1u << 15);
         if (!spi3_transfer_raw_timeout(0, &dst[i])) {
@@ -550,6 +575,9 @@ uint8_t fpga_capture_read_slow_point(uint8_t sample[2]) {
     }
 
     gpio_clear(GPIOC_BASE, 1u << 0);
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    gpio_clear(GPIOC_BASE, 1u << 1);
+#endif
     fpga_write_strobe();
     (void)SPI_DT(SPI3_BASE);
     gpio_set(GPIOC_BASE, 1u << 1);

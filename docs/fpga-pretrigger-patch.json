@@ -1,0 +1,184 @@
+{
+  "parent": "105a70648dafea9926e5232494067685701aa662",
+  "byte_xor_encoding": "base64 of big-endian 16-bit byte offset followed by uint8 xor; apply only to parent modes 1 and 2, then update AGM CRC",
+  "patch": "BqYQBvYCB0YEB1CAB5MSB5UCB5YhB58EB+gFB+mQB+oIB+4BB/AICDgDCDmDCDygCD8gCEAECIUCCIgNCImACNUECNgDCNmACSYBCXYQCcUBCdBAChUECiAICrcCCrhACwZAC1UEC6YQC6cCC62gC64gC/YCC/iAC/wBC/3xC/5ADEYEDEwDDE3kDJUDDJYBDJwBDJ1ADJ6wDOhADTcCDYaADdUEDisiDsYgDtBADxUCDyAID2IBD2hGD2mQD2oID3BAD7IED7cBD7gHD7kDD8AIEAYgEAgOEAmAEFUEEFcCEFhHEKUoEPRgEZQBEZWAEfCAEjYJEj8EEoZQEtUCEtYCFBUFFG8gFHQgFL8QFMMBFVUEFVZAFacEFfiAFpUCFpZAGgMgGhQgGlMEGmMBGqcEGrBAGviAGwAIG/MEG/mAHEMQHElAHh+QHr8FH/oCH/uAIUAoIZKAIeECIeNIIi8QIjACIjFgIjICIn+AIoFgIoIIItH8IyGAIyIgI28II3CEI3sEI8BAI8xAJA8IJBCAJBMEJGMQJLACJLFgJLIBJQFgJQIQJU8IJVCAJVH8JaGAJaIgJzAIJzkmJzsIJ4AEJ4kGJ4oBJ9kPJ9qIKCkIKCoCKHACKHFgKHOAKMFgKMIQKQ8JKRH8KWGAKWIgKbACKbFgKbiIKgFgKgIQKgOAKk8IKlH4KqCAKqGAKqKgKvQCK0QBK5QBK+QELXFgLcIULhACLhH4LmH8LmIgLrEgLrKgLwFALwIJL1GgL1MkL6FAMI8EMN8IMdACMnEIMnIEMsEQMsIBMwIEMwOAMw8JMxEIM1eQNT+gNoNIN7YJOK8IOLlAOQCAOQgBOfFAOkEgOpFAOpIQOpOAOuEgOuIQOuOAPpsUP5AEP+BAQDMEQIMgQg8IQl8BQq8JQveQQ+eQQ/BERJQBROQIRc8QRdMERh4BRiMgRm2gRrwBRr3jRr4iRr+gRsAoRwwDRw3iRw4ER1wBR11AR17AR62gR64IR/wBR/3iR/7ASEwDSE3gSE8QSJwBSJ1FSJ5RSYsBSYwQSoAoS3ACS3FgS3OAS8FgS8IQTA9QTBH4TF8FTGGETGIgTe9ATj8gTo4BTo8QUf+gVl8FV/AQWEAIWS9AWX8gXtSAXyMBagcCaliAc28gc78gdBMCdGRAdKwBdK2AdLF4dLICdLQDdPwBdP2AdP4wdQF8dQIwdUwLdU3odVH4dZwCdZ6AdaFydaJQdaOAdexAdjwgdj9gfCwBfC3gfC6AfHwBfH1QfH4wfMwCfM2gfM6QfM8QfRwBfR3ifR5BfWwJfW3gfW4CfbwBfb3wfb7AfcQGfgwDfg3kfg6AflwJfl3Afl4ofqwQfvsBgSwBgS2AgS4EgS9AgXwBgX2AgX4ggX8ggcwDgc2AgdBEghxpgh2AgmwBgm2Agm4QgrwBgr2Agr5AgwwLgw3og1wCg16AhO8EhT8EhUAY",
+  "changed_configuration_bits": 570,
+  "changed_bytes_excluding_crc": 366,
+  "locs": {
+    "prefill": [
+      6,
+      7,
+      13,
+      250
+    ],
+    "gate": [
+      6,
+      7,
+      14,
+      48059
+    ],
+    "target4": [
+      6,
+      7,
+      10,
+      61610
+    ],
+    "target5": [
+      6,
+      7,
+      9,
+      61610
+    ],
+    "target6": [
+      6,
+      7,
+      7,
+      61610
+    ],
+    "target7": [
+      6,
+      7,
+      5,
+      61610
+    ],
+    "target8": [
+      6,
+      5,
+      4,
+      61610
+    ],
+    "target9": [
+      4,
+      7,
+      8,
+      61610
+    ],
+    "target10": [
+      7,
+      3,
+      3,
+      61610
+    ],
+    "target11": [
+      7,
+      3,
+      13,
+      61610
+    ],
+    "equal0": [
+      7,
+      5,
+      0,
+      36873
+    ],
+    "equal1": [
+      7,
+      8,
+      4,
+      36873
+    ],
+    "equal2": [
+      7,
+      5,
+      1,
+      36873
+    ],
+    "equal3": [
+      7,
+      3,
+      8,
+      2448
+    ],
+    "match": [
+      7,
+      3,
+      9,
+      32768
+    ],
+    "match2": [
+      7,
+      3,
+      12,
+      43690
+    ],
+    "done": [
+      6,
+      3,
+      3,
+      32768
+    ],
+    "state": [
+      6,
+      6,
+      1,
+      61166
+    ],
+    "stop": [
+      6,
+      6,
+      7,
+      21588
+    ],
+    "load": [
+      8,
+      8,
+      7,
+      34952
+    ],
+    "reset": [
+      8,
+      8,
+      1,
+      17476
+    ]
+  },
+  "results": [
+    {
+      "mode": 0,
+      "sha": "7c9ad508c29df5f4df77fd7759fc7aa58eaebcc927843b294a5ac4dacce8edd5",
+      "crc": 1403921503,
+      "bits": 0,
+      "bytes": 0
+    },
+    {
+      "mode": 1,
+      "sha": "06b334363b40a90f5addf616ea8583d7fc130209b888b62b7f649ec6fdcc1d57",
+      "crc": 843455212,
+      "bits": 1308,
+      "bytes": 793
+    },
+    {
+      "mode": 2,
+      "sha": "00acfb8fa52e96146c5c28aacd5686e939885b950fa32d3789c3aae2cb9aa314",
+      "crc": 3287358487,
+      "bits": 1307,
+      "bytes": 793
+    }
+  ],
+  "model": [
+    {
+      "mode": 1,
+      "cases": 12288,
+      "anchor": [
+        1022,
+        1030
+      ],
+      "post": [
+        1017,
+        1025
+      ]
+    },
+    {
+      "mode": 2,
+      "cases": 12288,
+      "anchor": [
+        1022,
+        1030
+      ],
+      "post": [
+        1017,
+        1025
+      ]
+    }
+  ]
+}

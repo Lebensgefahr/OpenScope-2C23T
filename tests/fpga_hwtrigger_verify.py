@@ -9,7 +9,7 @@ import zlib
 source = (pathlib.Path(__file__).resolve().parents[1] / "src/fpga_bitstream.c").read_text()
 initializer = source.split("const uint8_t fpga_bitstream[] = {", 1)[1].split("};", 1)[0]
 tokens = re.findall(r"FPGA_CAPTURE_BYTE\((0x[0-9A-F]{2}), (0x[0-9A-F]{2}), (0x[0-9A-F]{2})\)|(0x[0-9A-F]{2})", initializer)
-assert sum(bool(t[0]) for t in tokens) == 442
+assert sum(bool(t[0]) for t in tokens) == 793
 
 def payload(mode):
     return bytes(int(t[mode] if t[0] else t[3], 16) for t in tokens)
@@ -24,8 +24,8 @@ def agm_crc(data):
 
 expected = [
     ("stock", "7c9ad508c29df5f4df77fd7759fc7aa58eaebcc927843b294a5ac4dacce8edd5", 0x53ae245f, 0),
-    ("selectable edge", "8c9bb3a4e2e9ff551b6cd45bd25cec27c9013fe5a730cd35f56fb408cf442ada", 0xd304b77a, 750),
-    ("anyedge", "cc4b5a39ad91ae4b44b5bc92516f6d2d240560ed38f191cdc66af64081e1c1d8", 0x22b3b181, 749),
+    ("selectable edge", "06b334363b40a90f5addf616ea8583d7fc130209b888b62b7f649ec6fdcc1d57", 0x32461aec, 1308),
+    ("anyedge", "00acfb8fa52e96146c5c28aacd5686e939885b950fa32d3789c3aae2cb9aa314", 0xc3f11c17, 1307),
 ]
 stock = payload(0)
 assert zlib.crc32(stock) == 0xb76f3d95
@@ -35,7 +35,7 @@ for mode, (name, sha, crc, bits) in enumerate(expected):
     assert agm_crc(b[:-4]) == int.from_bytes(b[-4:], "big") == crc
     assert sum((a ^ v).bit_count() for a, v in zip(stock[:-4], b[:-4])) == bits
     assert b[:76] == stock[:76] and b[-12:-4] == stock[-12:-4]
-    assert sum(a != v for a, v in zip(stock, b)) == (442 if mode else 0)
+    assert sum(a != v for a, v in zip(stock, b)) == ([0, 793, 793][mode])
     print(f"PASS {name}: CRC {crc:08x}, {bits} changed configuration bits")
 
 W = [34,34,34,108,34,34,34,34,34,34,108,34,34,16]
@@ -122,3 +122,57 @@ def verify(mode):
 
 verify(1)
 verify(2)
+
+
+# Ring control extracted from the committed payload.
+RING = {"prefill":[6,7,13,250],"gate":[6,7,14,48059],"target4":[6,7,10,61610],"target5":[6,7,9,61610],"target6":[6,7,7,61610],"target7":[6,7,5,61610],"target8":[6,5,4,61610],"target9":[4,7,8,61610],"target10":[7,3,3,61610],"target11":[7,3,13,61610],"equal0":[7,5,0,36873],"equal1":[7,8,4,36873],"equal2":[7,5,1,36873],"equal3":[7,3,8,2448],"match":[7,3,9,32768],"match2":[7,3,12,43690],"done":[6,3,3,32768],"state":[6,6,1,61166],"stop":[6,6,7,21588],"load":[8,8,7,34952],"reset":[8,8,1,17476]}
+for mode in (1, 2):
+    data = payload(mode)
+    r = {k: mask(data, *v[:3]) for k, v in RING.items()}
+    assert all(r[k] == v[3] for k, v in RING.items())
+    for a,b,c,d in itertools.product(range(2), repeat=4):
+        assert lut(r['prefill'],a,b,c,d) == int(not d and (a or c))
+        assert lut(r['gate'],a,b,c,d) == int(a or not b)
+        assert lut(r['target4'],a,b,c,d) == (c if d else a)
+        assert lut(r['equal0'],a,b,c,d) == int(a==b and c==d)
+        assert lut(r['equal3'],a,b,c,d) == int(a==b and c!=d)
+        assert lut(r['state'],a,b,c,d) == int(a or b)
+        assert lut(r['stop'],a,b,c,d) == int(not a and (b or c))
+        assert lut(r['load'],a,b,c,d) == (a & b)
+        assert lut(r['reset'],a,b,c,d) == ((1-a) & b)
+
+    # All possible trigger byte addresses, with a match pipeline of two
+    # core clocks. Test one, two and four core clocks per address. This is
+    # a zero-delay functional model, not a physical timing simulation.
+    anchors = []
+    for hold in (1,2,4):
+        for tr in range(4096):
+            target = tr >> 4
+            # Before the target half is reached both match registers are low.
+            # Skip the known nonmatching interval to keep the test quick.
+            distance = ((((target ^ 128) << 4) - tr) & 4095)
+            assert distance >= 2000
+            q1 = q2 = 0
+            for cyc in range(distance*hold, (distance+16)*hold):
+                addr = (tr + cyc//hold) & 4095
+                group = addr >> 4
+                eq = [lut(r['equal'+str(i)], group>>(2*i)&1,
+                          target>>(2*i)&1, group>>(2*i+1)&1,
+                          target>>(2*i+1)&1) for i in range(4)]
+                done = lut(r['done'],q1,q2,1,addr&1)
+                if lut(r['stop'],0,lut(r['state'],done,0),0):
+                    assert addr&1
+                    oldest = ((addr >> 1)+1)&2047
+                    anchor = ((tr>>1)-oldest)&2047
+                    assert 1008 <= anchor <= 1040
+                    anchors.append(anchor)
+                    break
+                q1,q2 = lut(r['match'],*eq),lut(r['match2'],q1)
+            else:
+                raise AssertionError('no stop')
+    assert len(anchors) == 12288
+    for addr in range(4096):
+        start = ((addr&4094)+2)&4095
+        assert not start&1
+        assert (start+4095)&4095 == ((addr&4094)+1)&4095
+    print(f"PASS mode {mode}: {len(anchors)} ring positions; anchor {min(anchors)}..{max(anchors)}; 4096 read pointer alignments")

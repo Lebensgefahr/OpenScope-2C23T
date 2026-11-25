@@ -33,3 +33,21 @@ Verification: exact payload SHA256/CRC, decoded comparator/shift/filter/edge LUT
 
 ## First physical test
 Use mode 1, old hardware, repetitive 1 kHz square wave first. Move level between low and high plateaus, switch RISE/FALL, then move level outside the signal range (NORMAL or SINGLE should wait). Repeat on CH2, with the unselected input quiet. Then repeat the Arduino rare pulse burst. The beginning remains at the left edge because pretrigger is not implemented. If false or missed triggering occurs, return to tested parent and report channel, slope and level. Do not use for normal releases yet.
+
+
+# Ring capture / pretrigger extension
+
+Parent hardware-tested level branch: 105a70648dafea9926e5232494067685701aa662. New experiment retains programmable threshold, slope, and source. Mode 0 and HW4 remain stock. Build:
+```sh
+python3 tests/fpga_hwtrigger_verify.py
+make clean
+make RUST_LLD=/usr/bin/ld.lld release-lt-hw4 FPGA_HWTRIGGER=1 VERSION=HWTRIG-PRETRIGGER
+```
+
+Capture runs continuously into all 4096 byte addresses (2048 sample pairs). A prefill latch inhibits triggering until write address bit 11 first becomes high. At the trigger, eight high address bits are frozen. Four two-bit comparators check the opposite half of the ring, ignoring four low byte-address bits. A two-clock match pipeline and odd-address condition request stop. The existing READY state also holds the phase/address stop until arm. This yields approximately 1024 pairs before and 1024 after the trigger, not an exact 50/50 split. The zero-delay model places the event at sample 1022..1030 for the modeled clock ratios. Real propagation delay and the BRAM pipeline may shift this. The FPGA does not manufacture pretrigger samples.
+
+Read counter tile (9,8) retains the increment carry chain and gains synchronous parallel load through the previously unused C inputs (C0=arm, zero during read; C1..11=frozen write address bits 1..11). TileSyncMUX00 keeps the existing reset route and TileSyncMUX01 selects load. PC1=1 during the framed PC2 strobe requests load; PC1=0 requests ordinary reset for other commands. MCU skips two byte frames, then reads the normal byte count with unchanged fast-range alignment. This is intended to return the ring in chronological order; actual sync-load behavior, serializer phase, boundary pair and clock timing need hardware verification. Existing SPI timing and generator payloads unchanged.
+
+UI stores an absolute trigger sample instead of a window start in hardware YT mode; a local +/-32 pair search refines the nominal midpoint if a sampled crossing exists. If decimation misses the crossing, the midpoint is used rather than rejecting READY. MOVE recomputes the display window and preserves its lock in STOP/SINGLE. Multiple edges inside that small search interval may make refinement ambiguous.
+
+570 configuration bit flips relative to the level branch. The reproducible byte XOR delta and LUT sites are in fpga-pretrigger-patch.json. No change to PLL, physical I/O direction, BRAM modes or bootloader. New routing is not STA-validated. The model exercises 12,288 stop positions per trigger mode and all 4096 read pointer alignments; not a hardware simulation. AUTO timeout remains unimplemented in this branch. Full ARM build has not been run here. First test: rare pulse burst at 200 us/div, then fast ranges, check both channels, STOP/SINGLE MOVE and a long stable baseline before the event. Compare the generator output against the tested parent. Reflash the parent if the ring ordering or READY is incorrect.
