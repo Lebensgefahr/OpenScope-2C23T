@@ -7,6 +7,7 @@
 #include "hw.h"
 #include "screenshot.h"
 #include "ui.h"
+#include "fpga_probe.h"
 #include "w25q.h"
 
 #include <stddef.h>
@@ -2226,9 +2227,37 @@ static void handle_cdc_mode_command(const char *cmd) {
     }
 }
 
+#if FPGA_TRIGGER_LAB && !HW_TARGET_HW40 && SCOPE_HW_CAPTURE
+static void cdc_send_fpga_probe(void) {
+    fpga_probe_result_t r = {0};
+    char buf[160] = "$FPGA,";
+    uint16_t pos = 6;
+    ui_scope_fpga_probe(&r);
+    const uint32_t values[] = {
+        r.status, r.timebase, r.ready_before, r.ready_after, r.observed_low,
+        r.latch_cycles, r.wait_cycles, r.read_cycles,
+        r.ch1_min, r.ch1_max, r.ch2_min, r.ch2_max
+    };
+    for (uint8_t i = 0; i < sizeof(values)/sizeof(values[0]); ++i) {
+        if (i) buf[pos++] = ',';
+        pos = cdc_append_u32(buf, pos, values[i]);
+    }
+    buf[pos++] = '\r';
+    buf[pos++] = '\n';
+    usb_cdc_send_bytes((const uint8_t *)buf, pos);
+}
+#endif
+
 static void handle_cdc_rx_command(const char *cmd) {
     const char *arg;
     if (!cmd) return;
+#if FPGA_TRIGGER_LAB && !HW_TARGET_HW40 && SCOPE_HW_CAPTURE
+    arg = cdc_match_prefix(cmd, "FPGAPROBE");
+    if (arg && cdc_command_end(arg)) {
+        cdc_send_fpga_probe();
+        return;
+    }
+#endif
     if (handle_cdc_gen_command(cmd)) return;
     if ((arg = cdc_match_prefix(cmd, "MODE:")) != 0) {
         handle_cdc_mode_command(arg);

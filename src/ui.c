@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "siggen.h"
 #include "scope.h"
+#include "fpga_probe.h"
 #include "usb_msc.h"
 #include "bootloader.h"
 #include "fft.h"
@@ -11190,6 +11191,20 @@ void ui_set_main_mode(uint8_t mode) {
         ui_render();
     }
 }
+
+#if FPGA_TRIGGER_LAB && !HW_TARGET_HW40 && SCOPE_HW_CAPTURE
+void ui_scope_fpga_probe(fpga_probe_result_t *r) {
+    r->timebase = scope_safe_timebase();
+    // Only the normal block acquisition path, while stopped.
+    // 20/50 us per div allow READY to go low before the 1 ms latch returns.
+    if (ui.mode != UI_MODE_SCOPE || ui.running ||
+        (r->timebase != 11u && r->timebase != 12u)) {
+        r->status = FPGA_PROBE_WRONG_STATE;
+        return;
+    }
+    fpga_probe_run(scope_capture_samples, r);
+}
+#endif
 
 void ui_scope_set_running(uint8_t run) {
     if (ui.mode == UI_MODE_SCOPE) {
