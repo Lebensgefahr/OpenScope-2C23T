@@ -341,6 +341,15 @@ static uint8_t scope_auto_channel_mask;
 static uint8_t scope_auto_channel_steps_left[2];
 static uint8_t scope_auto_channel_stable_count[2];
 static uint16_t scope_auto_last_frame;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+#define SCOPE_HW_AUTO_FRAMES 3u
+static uint8_t scope_hw_auto_count;
+static uint8_t scope_hw_auto_widened;
+static uint8_t scope_hw_auto_min[2][SCOPE_HW_AUTO_FRAMES];
+static uint8_t scope_hw_auto_max[2][SCOPE_HW_AUTO_FRAMES];
+static uint32_t scope_hw_auto_freq[2][SCOPE_HW_AUTO_FRAMES];
+static uint8_t scope_hw_auto_step(void);
+#endif
 static uint8_t scope_cursor_x[2] = {80, 176};
 static uint8_t scope_cursor_y[2] = {86, 170};
 static int16_t scope_cursor_time_value[2] = {-48, 48};
@@ -9179,6 +9188,10 @@ static void scope_auto_zero_service(void) {
 }
 
 static void scope_auto_cancel(void) {
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    scope_hw_auto_count = 0;
+    scope_hw_auto_widened = 0;
+#endif
     scope_auto_time_active = 0;
     scope_auto_time_mask = 0;
     scope_auto_time_steps_left = 0;
@@ -9337,6 +9350,9 @@ static uint8_t scope_auto_time_finish(uint8_t final_slow_step) {
 }
 
 static uint8_t scope_auto_time_service(void) {
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    return scope_hw_auto_step();
+#endif
     uint16_t half_period = 0;
     uint8_t idx;
     uint8_t valid;
@@ -9408,26 +9424,28 @@ static uint8_t scope_hw_auto_translate_raw(uint8_t raw, uint8_t from, uint8_t to
     return code < 0 ? 0u : code > 255 ? 255u : (uint8_t)code;
 }
 
-static uint8_t scope_hw_auto_range(uint8_t ch) {
+/* One adjacent range per verified batch; keep hysteresis on narrowing. */
+static uint8_t scope_hw_auto_range(uint8_t ch, uint8_t lo, uint8_t hi) {
     uint8_t old = scope_vdiv_ch[ch];
-    uint8_t lo = scope_min_raw[ch], hi = scope_max_raw[ch];
-    /* Clipping loses amplitude information; widen conservatively and
-     * let the next frame refine the result. Never amplify a flat input. */
-    if (lo <= SCOPE_AUTO_Y_CLIP_LOW || hi >= SCOPE_AUTO_Y_CLIP_HIGH) {
+    if (lo <= SCOPE_AUTO_Y_CLIP_LOW || hi >= SCOPE_AUTO_Y_CLIP_HIGH ||
+        hi - lo > SCOPE_AUTO_Y_TARGET_MAX) {
         return old + 1u < SCOPE_VDIV_COUNT ? (uint8_t)(old + 1u) : old;
     }
-    if (hi - lo < 10) {
+    if (!old || hi - lo < 4 || (scope_hw_auto_widened & (1u << ch))) {
         return old;
     }
-    for (uint8_t v = 0; v < SCOPE_VDIV_COUNT; ++v) {
-        uint8_t a = scope_hw_auto_translate_raw(lo, old, v);
-        uint8_t b = scope_hw_auto_translate_raw(hi, old, v);
-        if (a > SCOPE_AUTO_Y_CLIP_LOW && b < SCOPE_AUTO_Y_CLIP_HIGH &&
-            b - a <= SCOPE_AUTO_Y_TARGET_MAX && b - a >= 4) {
-            return v;
-        }
+    uint8_t a = scope_hw_auto_translate_raw(lo, old, old - 1u);
+    uint8_t b = scope_hw_auto_translate_raw(hi, old, old - 1u);
+    if (a >= 20u && b <= 235u && b - a <= 150) {
+        return (uint8_t)(old - 1u);
     }
     return old;
+}
+
+static uint32_t scope_hw_auto_median(uint32_t a, uint32_t b, uint32_t c) {
+    if (a > b) { uint32_t t = a; a = b; b = t; }
+    if (b > c) { uint32_t t = b; b = c; c = t; }
+    return a > b ? a : b;
 }
 
 static void scope_hw_auto_center(uint8_t ch, uint8_t raw) {
@@ -9441,72 +9459,117 @@ static void scope_hw_auto_center(uint8_t ch, uint8_t raw) {
     scope_ch_pos[ch] = scope_clamp_channel_pos(ch, (int16_t)pos);
 }
 
-/* Hardware triggering cannot guarantee frames at arbitrary seed ranges.
- * Start from a real YT frame, instead of resetting all gains and the
- * threshold to values which may make READY impossible. */
-static uint8_t scope_hw_auto_setup_from_frame(uint8_t mask) {
-    if (!scope_frame_valid || ui.scope_display != SCOPE_DISPLAY_YT ||
-        scope_slow_roll_active()) {
+/* Collect distinct captures at unchanged settings. After any gain change
+ * restart the batch, then use the measured midpoint of that actual range.
+ * The source is never changed merely because the other channel is stronger. */
+static uint8_t scope_hw_auto_step(void) {
+    if (!scope_auto_time_active || !scope_frame_valid ||
+        scope_auto_last_frame == scope_frame_id) {
         return 0;
+    }
+    scope_auto_last_frame = scope_frame_id;
+    uint8_t mask = scope_auto_enabled_mask(scope_auto_time_mask);
+    if (!mask || ui.scope_display != SCOPE_DISPLAY_YT || scope_slow_roll_active()) {
+        scope_auto_cancel();
+        return 0;
+    }
+    uint8_t n = scope_hw_auto_count;
+    for (uint8_t ch = 0; ch < 2u; ++ch) {
+        scope_hw_auto_min[ch][n] = scope_min_raw[ch];
+        scope_hw_auto_max[ch][n] = scope_max_raw[ch];
+        scope_hw_auto_freq[ch][n] = scope_estimate_freq_hz_window(ch, 2u, 2046u,
+                                     scope_min_raw[ch], scope_max_raw[ch]);
+    }
+    if (++scope_hw_auto_count < SCOPE_HW_AUTO_FRAMES) return 0;
+    scope_hw_auto_count = 0;
+    uint8_t lo[2], hi[2], mid[2];
+    for (uint8_t ch = 0; ch < 2u; ++ch) {
+        lo[ch] = (uint8_t)scope_hw_auto_median(scope_hw_auto_min[ch][0],
+                    scope_hw_auto_min[ch][1], scope_hw_auto_min[ch][2]);
+        hi[ch] = (uint8_t)scope_hw_auto_median(scope_hw_auto_max[ch][0],
+                    scope_hw_auto_max[ch][1], scope_hw_auto_max[ch][2]);
+        mid[ch] = (uint8_t)(((uint16_t)lo[ch] + hi[ch]) / 2u);
     }
     uint8_t source = scope_trigger_source_index();
-    if (!(mask & (1u << source)) || scope_channel_pp_raw(source) < 10u) {
-        uint8_t other = (uint8_t)(source ^ 1u);
-        if ((mask & (1u << other)) && scope_channel_pp_raw(other) >= 10u) {
-            source = other;
-        } else {
+    if (!scope_ch_enabled[source] || hi[source] - lo[source] < 4) {
+        uint8_t other = source ^ 1u;
+        if (!(mask & (1u << other)) || hi[other] - lo[other] < 10 ||
+            mid[other] < 12u || mid[other] > 243u) {
+            scope_auto_cancel();
             return 0;
         }
+        ui.scope_trigger_source = (uint8_t)(other + 1u);
+        ui.scope_trigger_level = mid[other];
+        (void)scope_hw_set_trigger(other, mid[other], ui.scope_trigger_edge);
+        scope_hw_arm();
+        return 1;
     }
-    uint32_t freq = scope_estimate_freq_hz_window(source, 2u, 2046u,
-                            scope_min_raw[source], scope_max_raw[source]);
-    uint8_t ranges[2], mids[2];
-    for (uint8_t ch = 0; ch < 2u; ++ch) {
-        ranges[ch] = scope_vdiv_ch[ch];
-        mids[ch] = scope_channel_mid_raw(ch);
-        if (mask & (1u << ch)) {
-            ranges[ch] = scope_hw_auto_range(ch);
-            mids[ch] = scope_hw_auto_translate_raw(mids[ch], scope_vdiv_ch[ch], ranges[ch]);
+    /* Adjust the non-trigger channel first, then the selected source.
+     * Only one gain change is allowed before the next three-frame batch. */
+    if (scope_auto_time_steps_left) {
+        for (uint8_t i = 0; i < 2u; ++i) {
+            uint8_t ch = i ? source : (source ^ 1u);
+            if (!(mask & (1u << ch))) continue;
+            uint8_t old = scope_vdiv_ch[ch];
+            uint8_t next = scope_hw_auto_range(ch, lo[ch], hi[ch]);
+            if (next == old) continue;
+            uint8_t translated = scope_hw_auto_translate_raw(mid[ch], old, next);
+            if (ch == source && (translated < 12u || translated > 243u)) continue;
+            if (next > old) scope_hw_auto_widened |= (uint8_t)(1u << ch);
+            --scope_auto_time_steps_left;
+            scope_vdiv_ch[ch] = next;
+            if (ch == source) ui.scope_trigger_level = translated;
+            scope_hw_auto_center(ch, translated);
+            ui.scope_vdiv = scope_safe_vdiv();
+            scope_cursor_level_sync_screen();
+            scope_apply_settings();
+            scope_hw_arm();
+            return 1;
         }
     }
-    /* Do not deliberately arm at a level outside the UI/ADC range. */
-    if (mids[source] < 12u || mids[source] > 243u) {
-        return 0;
+    for (uint8_t ch = 0; ch < 2u; ++ch) {
+        if (mask & (1u << ch)) scope_hw_auto_center(ch, mid[ch]);
     }
-    ui.scope_trigger_source = (uint8_t)(source + 1u);
-    ui.scope_trigger_level = mids[source];
-    ui.scope_trigger_mode = SCOPE_TRIGGER_AUTO;
-    ui.running = 1;
+    /* Keep the working threshold unless the measured waveform supports
+     * a new interior level. Never arm repeatedly on per-frame noise. */
+    if ((mask & (1u << source)) && hi[source] - lo[source] >= 4 &&
+        mid[source] >= 12u && mid[source] <= 243u) {
+        ui.scope_trigger_level = mid[source];
+    }
+    uint32_t *f = scope_hw_auto_freq[source];
+    uint32_t freq = scope_hw_auto_median(f[0], f[1], f[2]);
+    uint8_t tb = scope_safe_timebase();
     if (freq) {
-        /* Approximately three periods across twelve divisions. */
-        uint32_t target_ns = 250000000u / freq;
-        uint8_t tb = 0;
-        while (tb < SCOPE_AUTO_TIMEBASE_MAX &&
-               scope_timebase_unit_ns[tb] < target_ns) {
-            ++tb;
+        uint8_t consistent = 0;
+        for (uint8_t i = 0; i < SCOPE_HW_AUTO_FRAMES; ++i) {
+            uint32_t diff = f[i] > freq ? f[i] - freq : freq - f[i];
+            if (f[i] && diff <= freq / 5u) ++consistent;
         }
-        ui.scope_timebase = tb;
-    }
-    for (uint8_t ch = 0; ch < 2u; ++ch) {
-        if (mask & (1u << ch)) {
-            scope_vdiv_ch[ch] = ranges[ch];
-            scope_hw_auto_center(ch, mids[ch]);
-            scope_auto_channel_steps_left[ch] = SCOPE_VDIV_COUNT - 1u - ranges[ch];
+        if (consistent >= 2u) {
+            /* Timebase table is in tenths of the displayed ns/div.
+             * Three periods / twelve divisions = 25e6 / frequency. */
+            uint32_t target_ns = 25000000u / freq;
+            tb = 0;
+            while (tb < SCOPE_AUTO_TIMEBASE_MAX &&
+                   scope_timebase_unit_ns[tb] < target_ns) ++tb;
         }
     }
-    ui.scope_vdiv = scope_safe_vdiv();
-    scope_cursor_level_sync_screen();
+    uint8_t changed = tb != scope_safe_timebase();
+    ui.scope_timebase = tb;
     scope_h_pos = 0;
     scope_h_value_pos = 0;
     scope_h_value_timebase = scope_safe_timebase();
     scope_cursor_time_sync_screen();
-    scope_trigger_locked = 0;
-    scope_roll_trigger_reset();
-    scope_auto_channel_mask = mask;
-    scope_apply_settings();
-    scope_hw_arm();
-    return 1;
+    scope_auto_cancel();
+    if (changed) {
+        scope_apply_settings();
+        scope_hw_arm();
+    }
+    /* If the timebase did not change, the next poll updates the threshold
+     * if needed, while the currently displayed frame remains valid. */
+    return changed;
 }
+
 #endif
 
 static void scope_auto_setup_request(uint8_t mask) {
@@ -9521,12 +9584,17 @@ static void scope_auto_setup_request(uint8_t mask) {
     }
     scope_auto_zero_active = 0;
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
-    if (scope_hw_auto_setup_from_frame(mask)) {
-        return;
+    if (ui.scope_display == SCOPE_DISPLAY_YT && !scope_slow_roll_active()) {
+        scope_auto_time_active = 1;
+        scope_auto_time_mask = mask;
+        scope_auto_time_steps_left = 2u * SCOPE_VDIV_COUNT;
+        scope_frame_age_ms = 0;
+        ui.scope_trigger_mode = SCOPE_TRIGGER_AUTO;
+        if (!ui.running) {
+            ui.running = 1;
+            scope_hw_arm();
+        }
     }
-    /* No usable captured frame: leave the existing setup intact rather
-     * than losing the signal by blindly changing the gain and threshold.
-     * True no-signal autoset requires a future FPGA force-capture path. */
     return;
 #endif
     scope_auto_seed_ranges(mask);
