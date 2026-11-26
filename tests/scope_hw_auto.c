@@ -10,7 +10,7 @@ uint8_t scope_hw_set_trigger(uint8_t channel, uint8_t level, uint8_t falling) {
 }
 
 static void feed_hw_auto(uint8_t lo1, uint8_t hi1, uint8_t lo2, uint8_t hi2) {
-    auto_fill_channel(0, 50, lo1, hi1);
+    auto_fill_channel(0, 25, lo1, hi1);
     auto_fill_channel(1, 103, lo2, hi2);
     auto_frame();
 }
@@ -23,20 +23,20 @@ static void test_frame_autoset(void) {
     configured_range[1] = scope_vdiv_ch[1];
     ui.scope_vdiv = scope_safe_vdiv();
     scope_auto_setup_request(3);
-    assert(scope_auto_time_active && !configure_count && !arm_count);
+    assert(scope_auto_time_active && ui.scope_timebase == 0 && configure_count == 1 && arm_count == 1);
     feed_hw_auto(128, 208, 100, 140);
     feed_hw_auto(128, 208, 0, 255); /* one outlier */
-    assert(!configure_count && scope_vdiv_ch[1] == 5);
+    assert(configure_count == 1 && scope_vdiv_ch[1] == 5);
     feed_hw_auto(128, 208, 100, 140);
     assert(scope_vdiv_ch[0] == 5 && scope_vdiv_ch[1] == 4);
-    assert(configure_count == 1 && arm_count == 1);
-    assert(scope_auto_time_active && ui.scope_timebase == 11);
+    assert(configure_count == 2 && arm_count == 2);
+    assert(scope_auto_time_active && ui.scope_timebase == 0);
     for (unsigned i = 0; i < 3; ++i)
         feed_hw_auto(128, 208, 72, 152);
     assert(!scope_auto_time_active && !scope_auto_channel_mask);
     assert(ui.scope_trigger_source == 1 && ui.scope_trigger_level == 168);
     assert(scope_vdiv_ch[0] == 5 && scope_vdiv_ch[1] == 4);
-    assert(ui.scope_timebase == 10);
+    assert(ui.scope_timebase == 1); /* 2 MHz: 100 ns/div is nearest */
     for (uint8_t ch = 0; ch < 2; ++ch) {
         uint8_t mid = ch == 0 ? 168 : 112;
         int16_t center = scope_channel_base_center_for(ch) + scope_ch_pos[ch];
@@ -73,10 +73,30 @@ static void test_widen_translates_trigger(void) {
     assert(scope_vdiv_ch[0] == 6 && ui.scope_trigger_level == 134);
 }
 
+static void test_frequency_scan_slows_only_after_three_frames(void) {
+    setup();
+    ui.running = 1;
+    scope_auto_setup_request(1);
+    assert(ui.scope_timebase == 0);
+    /* The waveform is flat over this short capture, so frequency cannot
+     * be measured. The scan must not invent a period or jump to 200 us. */
+    for (unsigned i = 0; i < 2; ++i) {
+        auto_fill_channel(0, 2048, 90, 180);
+        auto_fill_channel(1, 2, 128, 128);
+        auto_frame();
+        assert(ui.scope_timebase == 0);
+    }
+    auto_fill_channel(0, 2048, 90, 180);
+    auto_fill_channel(1, 2, 128, 128);
+    auto_frame();
+    assert(ui.scope_timebase == 1 && scope_auto_time_active);
+}
+
 int main(void) {
     test_frame_autoset();
     test_no_frame_preserves_configuration();
     test_widen_translates_trigger();
+    test_frequency_scan_slows_only_after_three_frames();
     puts("hardware AUTO setup tests passed");
     return 0;
 }

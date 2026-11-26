@@ -345,6 +345,7 @@ static uint16_t scope_auto_last_frame;
 #define SCOPE_HW_AUTO_FRAMES 3u
 static uint8_t scope_hw_auto_count;
 static uint8_t scope_hw_auto_widened;
+static uint8_t scope_hw_auto_frequency_scan;
 static uint8_t scope_hw_auto_min[2][SCOPE_HW_AUTO_FRAMES];
 static uint8_t scope_hw_auto_max[2][SCOPE_HW_AUTO_FRAMES];
 static uint32_t scope_hw_auto_freq[2][SCOPE_HW_AUTO_FRAMES];
@@ -9191,6 +9192,7 @@ static void scope_auto_cancel(void) {
 #if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
     scope_hw_auto_count = 0;
     scope_hw_auto_widened = 0;
+    scope_hw_auto_frequency_scan = 0;
 #endif
     scope_auto_time_active = 0;
     scope_auto_time_mask = 0;
@@ -9473,6 +9475,17 @@ static uint8_t scope_hw_auto_step(void) {
         scope_auto_cancel();
         return 0;
     }
+    if (!scope_hw_auto_frequency_scan) {
+        scope_hw_auto_frequency_scan = 1;
+        if (ui.scope_timebase != 0u) {
+            ui.scope_timebase = 0u;
+            scope_h_value_timebase = scope_safe_timebase();
+            scope_cursor_time_sync_screen();
+            scope_apply_settings();
+            scope_hw_arm();
+            return 1;
+        }
+    }
     uint8_t n = scope_hw_auto_count;
     for (uint8_t ch = 0; ch < 2u; ++ch) {
         scope_hw_auto_min[ch][n] = scope_min_raw[ch];
@@ -9539,8 +9552,8 @@ static uint8_t scope_hw_auto_step(void) {
     uint32_t *f = scope_hw_auto_freq[source];
     uint32_t freq = scope_hw_auto_median(f[0], f[1], f[2]);
     uint8_t tb = scope_safe_timebase();
+    uint8_t consistent = 0;
     if (freq) {
-        uint8_t consistent = 0;
         for (uint8_t i = 0; i < SCOPE_HW_AUTO_FRAMES; ++i) {
             uint32_t diff = f[i] > freq ? f[i] - freq : freq - f[i];
             if (f[i] && diff <= freq / 5u) ++consistent;
@@ -9556,6 +9569,18 @@ static uint8_t scope_hw_auto_step(void) {
                 target_ns - scope_timebase_unit_ns[tb - 1u] <=
                 scope_timebase_unit_ns[tb] - target_ns) --tb;
         }
+    }
+    /* A coarse starting range may contain a perfectly stable alias.
+     * Search from full-rate capture and slow down only when there are
+     * not enough repeatable crossings to measure the real period. */
+    if (scope_hw_auto_frequency_scan && consistent < 2u &&
+        tb < SCOPE_AUTO_TIMEBASE_MAX) {
+        ui.scope_timebase = (uint8_t)(tb + 1u);
+        scope_h_value_timebase = scope_safe_timebase();
+        scope_cursor_time_sync_screen();
+        scope_apply_settings();
+        scope_hw_arm();
+        return 1;
     }
     uint8_t changed = tb != scope_safe_timebase();
     ui.scope_timebase = tb;
@@ -9593,7 +9618,19 @@ static void scope_auto_setup_request(uint8_t mask) {
         scope_auto_time_steps_left = 2u * SCOPE_VDIV_COUNT;
         scope_frame_age_ms = 0;
         ui.scope_trigger_mode = SCOPE_TRIGGER_AUTO;
-        if (!ui.running) {
+        if (scope_frame_valid) {
+            /* Keep working gains and threshold, but never trust frequency
+             * from the old (possibly undersampled) frame. */
+            scope_hw_auto_frequency_scan = 1;
+            ui.running = 1;
+            if (ui.scope_timebase != 0u) {
+                ui.scope_timebase = 0u;
+                scope_h_value_timebase = scope_safe_timebase();
+                scope_cursor_time_sync_screen();
+                scope_apply_settings();
+                scope_hw_arm();
+            }
+        } else if (!ui.running) {
             ui.running = 1;
             scope_hw_arm();
         }
