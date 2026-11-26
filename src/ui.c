@@ -341,6 +341,12 @@ static uint8_t scope_auto_channel_mask;
 static uint8_t scope_auto_channel_steps_left[2];
 static uint8_t scope_auto_channel_stable_count[2];
 static uint16_t scope_auto_last_frame;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+/* Allow the analogue front end and capture stream to settle before
+ * each existing autoset decision. Only distinct fresh frames count. */
+#define SCOPE_HW_AUTO_SETTLE_FRAMES 3u
+static uint8_t scope_hw_auto_settle_frames;
+#endif
 static uint8_t scope_cursor_x[2] = {80, 176};
 static uint8_t scope_cursor_y[2] = {86, 170};
 static int16_t scope_cursor_time_value[2] = {-48, 48};
@@ -9177,6 +9183,9 @@ static void scope_auto_zero_service(void) {
 }
 
 static void scope_auto_cancel(void) {
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    scope_hw_auto_settle_frames = 0;
+#endif
     scope_auto_time_active = 0;
     scope_auto_time_mask = 0;
     scope_auto_time_steps_left = 0;
@@ -9343,6 +9352,12 @@ static uint8_t scope_auto_time_service(void) {
         return 0;
     }
     scope_auto_last_frame = scope_frame_id;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    if (++scope_hw_auto_settle_frames < SCOPE_HW_AUTO_SETTLE_FRAMES) {
+        return 0;
+    }
+    scope_hw_auto_settle_frames = 0;
+#endif
     scope_auto_time_mask = scope_auto_enabled_mask(scope_auto_time_mask);
     if (!scope_auto_time_mask) {
         scope_auto_cancel();
@@ -9501,6 +9516,12 @@ static void scope_auto_channel_service(void) {
         return;
     }
     scope_auto_last_frame = scope_frame_id;
+#if !HW_TARGET_HW40 && defined(FPGA_HWTRIGGER) && FPGA_HWTRIGGER != 0
+    if (++scope_hw_auto_settle_frames < SCOPE_HW_AUTO_SETTLE_FRAMES) {
+        return;
+    }
+    scope_hw_auto_settle_frames = 0;
+#endif
     scope_auto_channel_mask = scope_auto_enabled_mask(scope_auto_channel_mask);
     for (uint8_t ch = 0; ch < 2u; ++ch) {
         uint8_t bit = (uint8_t)(1u << ch);
